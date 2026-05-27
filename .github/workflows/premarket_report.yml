@@ -1,0 +1,29 @@
+name: 장 시작 전 준비 리포트
+
+on:
+  schedule:
+    - cron: '30 23 * * 0-4'  # 평일 UTC 23:30 = 한국시간 오전 08:30
+  workflow_dispatch:
+
+jobs:
+  run-premarket:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 코드 가져오기
+        uses: actions/checkout@v4
+
+      - name: Python 설치
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 라이브러리 설치
+        run: pip install requests pandas yfinance beautifulsoup4 lxml
+
+      - name: 장 시작 전 리포트 실행
+        env:
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          RECEIVE_ADDRESS: ${{ secrets.RECEIVE_ADDRESS }}
+        run: python premarket_report.py
