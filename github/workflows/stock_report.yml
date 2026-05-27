@@ -1,0 +1,32 @@
+name: 주식 보고서 자동 실행
+
+on:
+  schedule:
+    - cron: '0 0 * * 1-5'  # 평일 매일 UTC 00:00 = 한국시간 09:00
+  workflow_dispatch:         # 수동 실행도 가능
+
+jobs:
+  run-report:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 코드 가져오기
+        uses: actions/checkout@v3
+
+      - name: Python 설치
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: 라이브러리 설치
+        run: pip install requests pandas yfinance beautifulsoup4 lxml
+
+      - name: 보고서 실행
+        env:
+          APP_KEY: ${{ secrets.APP_KEY }}
+          APP_SECRET: ${{ secrets.APP_SECRET }}
+          ACCOUNT_NO: ${{ secrets.ACCOUNT_NO }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          RECEIVE_ADDRESS: ${{ secrets.RECEIVE_ADDRESS }}
+        run: python portfolio_report.py
