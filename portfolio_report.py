@@ -1,9 +1,3 @@
-# portfolio_report.py
-# 포트폴리오 중심 일일 보고서 생성기
-# pip install requests pandas yfinance
-#
-# 실행: python portfolio_report.py
-
 import requests
 import pandas as pd
 import yfinance as yf
@@ -13,19 +7,16 @@ import datetime as dt
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-
 # =====================================================
-# ✅ 설정값 입력
+# ✅ 설정값 (GitHub Secrets에서 자동으로 읽어옴)
 # =====================================================
-APP_KEY            = "여기에_한국투자증권_APP_KEY"
-APP_SECRET         = "여기에_한국투자증권_APP_SECRET"
-ACCOUNT_NO         = "여기에_계좌번호_앞8자리"
+APP_KEY            = os.environ.get("APP_KEY", "")
+APP_SECRET         = os.environ.get("APP_SECRET", "")
+ACCOUNT_NO         = os.environ.get("ACCOUNT_NO", "")
 ACCOUNT_CODE       = "01"
-
-GMAIL_ADDRESS      = "여기에_gmail주소@gmail.com"
-GMAIL_APP_PASSWORD = "여기에_앱비밀번호16자리"   # 공백 없이
-RECEIVE_ADDRESS    = "여기에_받을_이메일@gmail.com"
-
+GMAIL_ADDRESS      = os.environ.get("GMAIL_ADDRESS", "")
+GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
+RECEIVE_ADDRESS    = os.environ.get("RECEIVE_ADDRESS", "")
 TOKEN_FILE = "token.json"
 
 # =====================================================
