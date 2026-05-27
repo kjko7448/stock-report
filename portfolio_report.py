@@ -1,3 +1,9 @@
+# portfolio_report.py
+# 포트폴리오 중심 일일 보고서 생성기
+# pip install requests pandas yfinance
+#
+# 실행: python portfolio_report.py
+
 import requests
 import pandas as pd
 import yfinance as yf
@@ -7,6 +13,7 @@ import datetime as dt
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+
 # =====================================================
 # ✅ 설정값 (GitHub Secrets에서 자동으로 읽어옴)
 # =====================================================
@@ -46,7 +53,7 @@ HOLDINGS = [
     ("461950", "AI반도체TOP2",             3,    45856, "ETF_KR"),
 ]
 
-# 스윙 추천 후보 (한국투자증권 API)
+# 스윙 추천 후보
 SWING_CANDIDATES = [
     ("005930", "삼성전자"),
     ("000660", "SK하이닉스"),
@@ -154,14 +161,14 @@ def get_us_price(ticker):
 # =====================================================
 def get_macro():
     tickers = {
-        "S&P500":    "^GSPC",
-        "나스닥":     "^IXIC",
-        "다우":       "^DJI",
-        "VIX(공포지수)": "^VIX",
-        "달러인덱스":  "DX-Y.NYB",
-        "원달러환율":  "USDKRW=X",
-        "WTI유가":    "CL=F",
-        "금":         "GC=F",
+        "S&P500":        "^GSPC",
+        "나스닥":         "^IXIC",
+        "다우":           "^DJI",
+        "VIX(공포지수)":  "^VIX",
+        "달러인덱스":     "DX-Y.NYB",
+        "원달러환율":     "USDKRW=X",
+        "WTI유가":        "CL=F",
+        "금":             "GC=F",
     }
     result = {}
     for name, sym in tickers.items():
@@ -188,7 +195,6 @@ def calc_signals(avg, current, high52, low52):
 
     profit_rate = (current - avg) / avg * 100
 
-    # 추가매수
     if current <= avg * 0.95:
         if low52 > 0 and current <= low52 * 1.10:
             add_buy = f"{int(current * 0.97):,}원 (강력추가)"
@@ -197,7 +203,6 @@ def calc_signals(avg, current, high52, low52):
     else:
         add_buy = "-"
 
-    # 방어매도
     if current <= avg * 0.92:
         def_sell = f"{int(avg * 0.92):,}원 ⚠️ 손절검토"
     elif current <= avg * 0.97:
@@ -205,7 +210,6 @@ def calc_signals(avg, current, high52, low52):
     else:
         def_sell = "-"
 
-    # 익절
     if profit_rate >= 8:
         profit_sell = f"1차 {int(avg * 1.10):,}원 / 2차 {int(avg * 1.20):,}원"
     else:
@@ -214,7 +218,7 @@ def calc_signals(avg, current, high52, low52):
     return add_buy, def_sell, profit_sell
 
 # =====================================================
-# 스윙 추천 종목 (한국투자증권 API 사용)
+# 스윙 추천 종목 (한국투자증권 API)
 # =====================================================
 def get_swing_picks(token):
     picks = []
@@ -226,21 +230,18 @@ def get_swing_picks(token):
         score  = 0
         reason = []
 
-        # 52주 저가 대비 위치
         if low52 > 0:
             low_gap = (price - low52) / low52 * 100
             if low_gap <= 30:
                 score += 20
                 reason.append("52주 저가 근접")
 
-        # 52주 고가 대비 눌림
         if high52 > 0:
             high_gap = (price - high52) / high52 * 100
             if -20 <= high_gap <= -5:
                 score += 20
                 reason.append("고점 대비 눌림")
 
-        # 오늘 등락률
         if 1 <= rate <= 5:
             score += 20
             reason.append("안정적 상승")
@@ -251,7 +252,6 @@ def get_swing_picks(token):
             score += 5
             reason.append("소폭 하락 (매수 기회)")
 
-        # 거래량
         if volume >= 1_000_000:
             score += 20
             reason.append("거래량 풍부")
@@ -259,20 +259,19 @@ def get_swing_picks(token):
             score += 10
             reason.append("거래량 양호")
 
-        # 테마
         theme = get_theme(name)
         if theme != "일반":
             score += 20
             reason.append(f"{theme} 테마")
 
         picks.append({
-            "종목명":    name,
-            "현재가":    price,
+            "종목명":     name,
+            "현재가":     price,
             "추천매수가": int(price * 0.98),
-            "추천주수":  max(1, int(1_000_000 // (price * 0.98))),
-            "점수":      score,
-            "근거":      ", ".join(reason) if reason else "기본 관찰",
-            "기간":      "1~2주 스윙",
+            "추천주수":   max(1, int(1_000_000 // (price * 0.98))),
+            "점수":       score,
+            "근거":       ", ".join(reason) if reason else "기본 관찰",
+            "기간":       "1~2주 스윙",
         })
 
     picks = sorted(picks, key=lambda x: x["점수"], reverse=True)
@@ -301,11 +300,9 @@ def send_email(subject, html_body):
 def build_report(token):
     today = dt.datetime.now().strftime("%Y년 %m월 %d일 %H:%M")
 
-    # 1. 거시 경제
     print("🌍 거시경제 데이터 수집 중...")
     macro = get_macro()
 
-    # 2. 포트폴리오 분석
     print("💼 포트폴리오 데이터 수집 중...")
     portfolio_rows = []
     total_invest   = 0
@@ -318,7 +315,6 @@ def build_report(token):
             price, rate, volume, high52, low52 = get_kr_price(token, code)
             price_display = f"{price:,}원" if price else "-"
         else:
-            # 미국 종목 (US ETF)
             price_usd, price, rate, high52, low52, fx = get_us_price(code)
             price_display = f"${price_usd:,.2f} (≈{price:,}원)" if price else "-"
 
@@ -328,7 +324,7 @@ def build_report(token):
         profit_rate = (price - avg) / avg * 100 if (avg > 0 and price > 0) else 0
 
         total_invest  += invest
-        total_current += current_val if price else invest  # 조회 실패시 투자금으로
+        total_current += current_val if price else invest
 
         add_buy, def_sell, profit_sell = calc_signals(avg, price, high52, low52)
 
@@ -336,34 +332,29 @@ def build_report(token):
         profit_color = "#e74c3c" if profit < 0 else "#27ae60"
 
         portfolio_rows.append({
-            "name":         name,
-            "market":       market,
-            "qty":          qty,
-            "avg":          avg,
-            "price":        price,
+            "name":          name,
+            "market":        market,
+            "qty":           qty,
+            "avg":           avg,
+            "price":         price,
             "price_display": price_display,
-            "rate":         rate,
-            "profit":       profit,
-            "profit_rate":  profit_rate,
-            "add_buy":      add_buy,
-            "def_sell":     def_sell,
-            "profit_sell":  profit_sell,
-            "rate_color":   rate_color,
-            "profit_color": profit_color,
+            "rate":          rate,
+            "profit":        profit,
+            "profit_rate":   profit_rate,
+            "add_buy":       add_buy,
+            "def_sell":      def_sell,
+            "profit_sell":   profit_sell,
+            "rate_color":    rate_color,
+            "profit_color":  profit_color,
         })
 
-    # 3. 스윙 추천
     print("🎯 스윙 추천 종목 분석 중...")
     swing_picks = get_swing_picks(token)
 
-    # =====================================================
-    # HTML 생성
-    # =====================================================
     total_profit      = total_current - total_invest
     total_profit_rate = (total_profit / total_invest * 100) if total_invest > 0 else 0
     total_color       = "#e74c3c" if total_profit < 0 else "#27ae60"
 
-    # 거시경제 행
     macro_rows = ""
     for name, val in macro.items():
         emoji = "🔴" if val["등락률"] < 0 else "🟢"
@@ -375,7 +366,6 @@ def build_report(token):
             <td style="color:{color}">{emoji} {val['등락률']:+.2f}%</td>
         </tr>"""
 
-    # 포트폴리오 행
     port_rows = ""
     for r in portfolio_rows:
         port_rows += f"""
@@ -391,7 +381,6 @@ def build_report(token):
             <td style="color:#8e44ad;font-size:12px">{r['profit_sell']}</td>
         </tr>"""
 
-    # 스윙 추천 행
     swing_rows = ""
     for i, p in enumerate(swing_picks, 1):
         swing_rows += f"""
@@ -435,8 +424,6 @@ def build_report(token):
     <h1>📊 포트폴리오 일일 보고서</h1>
     <p>{today} 기준</p>
   </div>
-
-  <!-- 거시경제 -->
   <div class="section">
     <div class="section-title">🌍 글로벌 시장 흐름 (전일 마감 기준)</div>
     <table>
@@ -444,8 +431,6 @@ def build_report(token):
       {macro_rows}
     </table>
   </div>
-
-  <!-- 포트폴리오 요약 -->
   <div class="section">
     <div class="section-title">💼 내 포트폴리오 현황</div>
     <div class="summary-box">
@@ -475,8 +460,6 @@ def build_report(token):
       {port_rows}
     </table>
   </div>
-
-  <!-- 스윙 추천 -->
   <div class="section">
     <div class="section-title">🎯 오늘의 스윙 추천 TOP5 (1~2주)</div>
     <table>
@@ -484,7 +467,6 @@ def build_report(token):
       {swing_rows}
     </table>
   </div>
-
   <div class="footer">
     ⚠️ 본 보고서는 참고용이며 투자 판단의 최종 책임은 본인에게 있습니다.<br>
     자동 생성: portfolio_report.py | 데이터: 한국투자증권 API + yfinance
@@ -506,12 +488,10 @@ def main():
     token = get_token()
     html  = build_report(token)
 
-    # HTML 파일 저장
     with open("portfolio_report.html", "w", encoding="utf-8") as f:
         f.write(html)
     print("✅ 보고서 저장 완료: portfolio_report.html")
 
-    # 이메일 전송
     today_str = dt.datetime.now().strftime("%Y/%m/%d")
     print("📧 이메일 전송 중...")
     send_email(f"📊 [{today_str}] 포트폴리오 일일 보고서", html)
