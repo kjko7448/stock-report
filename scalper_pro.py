@@ -424,8 +424,8 @@ def after_report():
     top30.to_csv("scalper_after.csv", index=False, encoding="utf-8-sig")
 
     # ── 내일 전략 요약 ──
-    tomorrow = (dt.datetime.now() + dt.timedelta(days=1)).strftime("%m/%d")
-    today_str = dt.datetime.now().strftime("%Y/%m/%d %H:%M")
+    today_str = dt.datetime.now(KST).strftime("%Y/%m/%d %H:%M")
+    tomorrow  = (dt.datetime.now(KST) + dt.timedelta(days=1)).strftime("%m/%d")
 
     gap_top  = top30[top30["갭상가능성"].str.contains("유력|가능")].head(5)
     overnight_ok  = top30[top30["오버나잇판단"].str.contains("가능")].head(5)
