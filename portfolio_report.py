@@ -10,6 +10,7 @@ import yfinance as yf
 import json
 import os
 import datetime as dt
+KST = dt.timezone(dt.timedelta(hours=9))
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
