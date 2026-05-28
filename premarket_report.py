@@ -166,8 +166,8 @@ def send_email(subject, html_body):
 # HTML 보고서 생성
 # =====================================================
 def build_report():
-    today_str = dt.datetime.now().strftime("%Y년 %m월 %d일")
-    now_str   = dt.datetime.now().strftime("%H:%M")
+    today_str = dt.datetime.now(KST).strftime("%Y년 %m월 %d일")
+    now_str   = dt.datetime.now(KST).strftime("%H:%M")
 
     print("🌍 미국 시장 데이터 수집 중...")
     us_market = get_us_market()
