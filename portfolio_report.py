@@ -252,7 +252,7 @@ def send_email(subject, html_body):
         print(f"❌ 이메일 전송 실패: {e}")
 
 def build_report(token):
-    today = dt.datetime.now().strftime("%Y년 %m월 %d일 %H:%M")
+    today = dt.datetime.now(KST).strftime("%Y년 %m월 %d일 %H:%M")
     print("🌍 거시경제 데이터 수집 중...")
     macro = get_macro()
     print("💼 포트폴리오 데이터 수집 중...")
