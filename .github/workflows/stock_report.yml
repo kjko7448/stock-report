@@ -2,8 +2,9 @@ name: 주식 보고서 자동 실행
 
 on:
   schedule:
-    - cron: '0 0 * * 1-5'  # 평일 매일 UTC 00:00 = 한국시간 09:00
-  workflow_dispatch:         # 수동 실행도 가능
+    - cron: '0 9 * * 1-5'
+      timezone: 'Asia/Seoul'
+  workflow_dispatch:
 
 jobs:
   run-report:
