@@ -1,0 +1,37 @@
+name: 추천 데이터 저장 (매일 오전 9:05)
+
+on:
+  schedule:
+    - cron: '5 9 * * 1-5'
+      timezone: 'Asia/Seoul'
+  workflow_dispatch:
+
+jobs:
+  run-saver:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 코드 가져오기
+        uses: actions/checkout@v4
+
+      - name: Python 설치
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 라이브러리 설치
+        run: pip install requests pandas yfinance
+
+      - name: 추천 데이터 저장
+        env:
+          APP_KEY: ${{ secrets.APP_KEY }}
+          APP_SECRET: ${{ secrets.APP_SECRET }}
+        run: python predictions_saver.py
+
+      - name: 저장 파일 커밋
+        run: |
+          git config --global user.email "action@github.com"
+          git config --global user.name "GitHub Action"
+          git add predictions.csv || true
+          git diff --staged --quiet || git commit -m "자동 저장: 추천 데이터 $(date +'%Y-%m-%d')"
+          git push || true
