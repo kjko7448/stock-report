@@ -1,0 +1,44 @@
+name: 주간 피드백 보고서 (매주 월요일)
+
+on:
+  schedule:
+    - cron: '0 8 * * 1'
+      timezone: 'Asia/Seoul'
+  workflow_dispatch:
+
+jobs:
+  run-feedback:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 코드 가져오기
+        uses: actions/checkout@v4
+
+      - name: Python 설치
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 라이브러리 설치
+        run: pip install requests pandas yfinance
+
+      - name: 주간 피드백 실행
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          RECEIVE_ADDRESS: ${{ secrets.RECEIVE_ADDRESS }}
+        run: python feedback_analyzer.py weekly
+
+      - name: 월간 피드백 실행 (매월 1일 월요일)
+        if: ${{ github.event_name == 'schedule' && startsWith(github.event.schedule, '0 8 * * 1') }}
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          RECEIVE_ADDRESS: ${{ secrets.RECEIVE_ADDRESS }}
+        run: |
+          DAY=$(date +%d)
+          if [ "$DAY" -le 7 ]; then
+            python feedback_analyzer.py monthly
+          fi
