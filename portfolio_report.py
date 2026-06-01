@@ -58,6 +58,8 @@ HOLDINGS = [
     ("441680", "TIGER 나스닥100커버드콜",     111,    10719, "ETF_KR"),
     ("0167A0", "SOL AI반도체TOP2플러스",  5, 21215, "ETF_KR"),
     ("395160", "KODEX AI반도체TOP2플러스", 3, 45856, "ETF_KR"),
+    ("445290", "KODEX 로봇액티브", 20, 48250, "ETF_KR"),
+    ("487240", "KODEX AI전력핵심설비", 20, 50775, "ETF_KR"),
 ]
 
 SWING_CANDIDATES = [
