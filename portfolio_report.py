@@ -348,6 +348,9 @@ def get_ai_summary(portfolio_rows, macro, vix_val, swing_picks):
     if not ANTHROPIC_API_KEY:
         return None
 
+    print(f"🔑 API 키 확인: {ANTHROPIC_API_KEY[:20]}...")
+    try:
+        res = requests.post(
     # 포트폴리오 요약 텍스트 생성
     port_summary = ""
     urgent_items = []  # 긴급 행동 필요 종목
