@@ -3,7 +3,6 @@ name: 장 시작 전 준비 리포트
 on:
   schedule:
     - cron: '30 8 * * 1-5'
-      timezone: 'Asia/Seoul'
   workflow_dispatch:
 
 jobs:
