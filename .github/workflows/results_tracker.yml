@@ -3,7 +3,6 @@ name: 결과 추적 (매일 오전 8:40)
 on:
   schedule:
     - cron: '40 8 * * 1-5'
-      timezone: 'Asia/Seoul'
   workflow_dispatch:
 
 jobs:
