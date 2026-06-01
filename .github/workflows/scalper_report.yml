@@ -3,7 +3,6 @@ name: 단타 오버나잇 리포트 자동 실행
 on:
   schedule:
     - cron: '30 6 * * 1-5'
-      timezone: 'Asia/Seoul'
   workflow_dispatch:
 
 jobs:
