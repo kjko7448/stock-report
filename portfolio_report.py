@@ -418,6 +418,7 @@ S&P500: {sp_rate:+.2f}%
 (손절/방어매도 필요한 종목, 없으면 "없음")
 """
 
+    print(f"🔑 API 키 확인: {ANTHROPIC_API_KEY[:20]}...")
     try:
         res = requests.post(
             "https://api.anthropic.com/v1/messages",
@@ -435,7 +436,9 @@ S&P500: {sp_rate:+.2f}%
         )
         return res.json()["content"][0]["text"]
     except Exception as e:
-        print(f"⚠️ Claude API 오류: {e}")
+        print(f"⚠️ Claude API 오류 상세: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 def send_email(subject, html_body):
