@@ -11,7 +11,6 @@ import datetime as dt
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from bs4 import BeautifulSoup
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -110,9 +109,13 @@ def get_token():
         data=json.dumps({"grant_type":"client_credentials","appkey":APP_KEY,"appsecret":APP_SECRET}))
     token_data = res.json()
     token_data["issued_at"] = dt.datetime.now(KST).strftime("%Y-%m-%d")
-    with open(TOKEN_FILE,"w") as f: json.dump(token_data,f)
+    with open(TOKEN_FILE,"w") as f:
+        json.dump(token_data,f)
     return token_data["access_token"]
 
+# =====================================================
+# 가격 조회
+# =====================================================
 def get_kr_price(token, code):
     url = "https://openapi.koreainvestment.com:9443/uapi/domestic-stock/v1/quotations/inquire-price"
     headers = {
@@ -142,6 +145,9 @@ def get_us_price(ticker):
     except:
         return 0,0,0,0,0,1380
 
+# =====================================================
+# 거시경제
+# =====================================================
 def get_macro():
     tickers = {
         "S&P500":"^GSPC","나스닥":"^IXIC","다우":"^DJI",
@@ -163,6 +169,9 @@ def get_macro():
             result[name] = {"가격":0,"등락률":0}
     return result
 
+# =====================================================
+# 기술적 분석
+# =====================================================
 def get_rsi(code, market, period=14):
     try:
         ticker = code+".KS" if market in ("KR","ETF_KR") else code
@@ -184,10 +193,10 @@ def get_ma_cross(code, market):
         ma20 = hist["Close"].rolling(20).mean().iloc[-1]
         ma60 = hist["Close"].rolling(60).mean().iloc[-1]
         curr = hist["Close"].iloc[-1]
-        if ma20>ma60 and curr>ma20:    return "🟢 골든크로스","#27ae60"
-        elif ma20<ma60 and curr<ma20:  return "🔴 데드크로스","#e74c3c"
-        elif curr>ma20>ma60:           return "🟢 상승추세","#27ae60"
-        elif curr<ma20:                return "🟡 20일선하회","#f39c12"
+        if ma20>ma60 and curr>ma20:   return "🟢 골든크로스","#27ae60"
+        elif ma20<ma60 and curr<ma20: return "🔴 데드크로스","#e74c3c"
+        elif curr>ma20>ma60:          return "🟢 상승추세","#27ae60"
+        elif curr<ma20:               return "🟡 20일선하회","#f39c12"
         return "🟡 횡보","#888"
     except:
         return "-","#888"
@@ -225,13 +234,16 @@ def get_turtle_signal(code, price):
     except:
         return "-","#888","-","-","-"
 
+# =====================================================
+# 매매 신호 계산
+# =====================================================
 def calc_signals(avg, current, code, market, qty, high52, low52, current_rate):
     if current==0 or avg==0:
         return {k:"-" for k in ["추가매수","방어매도","터틀익절","분할익절","atr익절","변동성"]}
 
     profit_rate = (current-avg)/avg*100
 
-    # 추가매수
+    # 거래량 확인
     try:
         ticker  = code+".KS" if market in ("KR","ETF_KR") else code
         hist    = yf.Ticker(ticker).history(period="1mo").dropna()
@@ -250,7 +262,6 @@ def calc_signals(avg, current, code, market, qty, high52, low52, current_rate):
     else:
         add_buy = "-"
 
-    # 방어매도
     ma_sig,_ = get_ma_cross(code, market)
     if current <= avg*0.92:
         def_sell = f"{int(avg*0.92):,}원 ⚠️ 손절"
@@ -261,7 +272,6 @@ def calc_signals(avg, current, code, market, qty, high52, low52, current_rate):
     else:
         def_sell = "-"
 
-    # 터틀 익절
     try:
         ticker = code+".KS" if market in ("KR","ETF_KR") else code
         hist   = yf.Ticker(ticker).history(period="2mo").dropna()
@@ -270,7 +280,6 @@ def calc_signals(avg, current, code, market, qty, high52, low52, current_rate):
     except:
         turtle_sell = "-"
 
-    # 분할 익절
     q1,q2 = max(1,int(qty*0.3)), max(1,int(qty*0.3))
     q3    = max(1,qty-q1-q2)
     p1,p2,p3 = int(avg*1.10),int(avg*1.20),int(avg*1.30)
@@ -283,14 +292,10 @@ def calc_signals(avg, current, code, market, qty, high52, low52, current_rate):
     else:
         split_sell = f"1차({q1}주/{p1:,}원) | 2차({q2}주/{p2:,}원) | 3차({q3}주/{p3:,}원)"
 
-    # ATR 익절
     atr_pct, vol = get_atr(code, market)
-    if vol=="높음":
-        atr_sell = f"{int(avg*1.20):,}/{int(avg*1.40):,}원"
-    elif vol=="낮음":
-        atr_sell = f"{int(avg*1.07):,}/{int(avg*1.12):,}원"
-    else:
-        atr_sell = f"{int(avg*1.10):,}/{int(avg*1.20):,}원"
+    if vol=="높음":   atr_sell = f"{int(avg*1.20):,}/{int(avg*1.40):,}원"
+    elif vol=="낮음": atr_sell = f"{int(avg*1.07):,}/{int(avg*1.12):,}원"
+    else:             atr_sell = f"{int(avg*1.10):,}/{int(avg*1.20):,}원"
 
     return {
         "추가매수":add_buy,"방어매도":def_sell,
@@ -298,6 +303,9 @@ def calc_signals(avg, current, code, market, qty, high52, low52, current_rate):
         "atr익절":atr_sell,"변동성":f"{vol}({atr_pct}%)",
     }
 
+# =====================================================
+# 스윙 추천
+# =====================================================
 def get_swing_picks(token):
     picks = []
     for code, name in SWING_CANDIDATES:
@@ -307,7 +315,7 @@ def get_swing_picks(token):
         if low52>0 and (price-low52)/low52*100<=30: score+=20; reason.append("52주저가근접")
         if high52>0 and -20<=(price-high52)/high52*100<=-5: score+=20; reason.append("고점눌림")
         if 1<=rate<=5: score+=20; reason.append("안정상승")
-        elif rate>5: score+=10; reason.append("강한상승")
+        elif rate>5:   score+=10; reason.append("강한상승")
         if volume>=1_000_000: score+=20; reason.append("거래량풍부")
         rsi = get_rsi(code,"KR")
         ma_sig,ma_col = get_ma_cross(code,"KR")
@@ -328,11 +336,11 @@ def get_swing_picks(token):
 
 def get_vix_signal(macro):
     vix = macro.get("VIX",{}).get("가격",20)
-    if vix>=40:   return "🟢 극단적 공포 → 역발상 기회!","#27ae60",vix
+    if vix>=40:   return "🟢 극단적 공포→역발상 기회!","#27ae60",vix
     elif vix>=30: return "🔴 단타 완전 금지!","#e74c3c",vix
     elif vix>=25: return "🟠 보수적 매매","#e67e22",vix
     elif vix>=20: return "🟡 주의 구간","#f39c12",vix
-    else:         return "🟢 안정 → 적극 매매","#27ae60",vix
+    else:         return "🟢 안정→적극 매매","#27ae60",vix
 
 def get_seasonality():
     month = dt.datetime.now(KST).month
@@ -342,38 +350,27 @@ def get_seasonality():
     return m.get(month,"🟡 보통")
 
 # =====================================================
-# Claude AI 요약 (핵심!)
+# Claude AI 요약
 # =====================================================
 def get_ai_summary(portfolio_rows, macro, vix_val, swing_picks):
+    print(f"🔑 API 키 확인: {ANTHROPIC_API_KEY[:20] if ANTHROPIC_API_KEY else '없음'}...")
+
     if not ANTHROPIC_API_KEY:
+        print("⚠️ ANTHROPIC_API_KEY 없음")
         return None
 
-    print(f"🔑 API 키 확인: {ANTHROPIC_API_KEY[:20]}...")
-    try:
-        res = requests.post(
-    # 포트폴리오 요약 텍스트 생성
     port_summary = ""
-    urgent_items = []  # 긴급 행동 필요 종목
-
     for r in portfolio_rows:
         s = r.get("signals", {})
         profit_rate = r.get("profit_rate", 0)
         name = r["name"]
-
         line = f"{name}: 현재가 {r['price_display']}, 등락률 {r['rate']:+.2f}%, 수익률 {profit_rate:+.1f}%"
-
         if s.get("추가매수") and s["추가매수"] != "-":
             line += f", 추가매수={s['추가매수']}"
         if s.get("방어매도") and s["방어매도"] != "-":
             line += f", 방어매도={s['방어매도']}"
-            if "손절" in s["방어매도"] or "⚠️" in s["방어매도"]:
-                urgent_items.append(f"⚠️ {name}: {s['방어매도']}")
-        if "금지" in str(s.get("추가매수","")):
-            urgent_items.append(f"🚫 {name}: 거래량 동반 하락 추가매수 금지")
-
         port_summary += line + "\n"
 
-    # 스윙 추천 요약
     swing_summary = ""
     for p in swing_picks[:3]:
         swing_summary += f"{p['종목명']}: 추천가 {p['추천매수가']:,}원, {p['터틀신호']}, RSI {p['RSI']}\n"
@@ -382,8 +379,7 @@ def get_ai_summary(portfolio_rows, macro, vix_val, swing_picks):
     sp_rate = macro.get("S&P500",{}).get("등락률",0)
     season  = get_seasonality()
 
-    prompt = f"""
-당신은 주식 투자 어시스턴트입니다. 아래 데이터를 분석해서 투자자가 오늘 바로 행동할 수 있는 핵심 요약을 만들어주세요.
+    prompt = f"""당신은 주식 투자 어시스턴트입니다. 아래 데이터를 분석해서 투자자가 오늘 바로 행동할 수 있는 핵심 요약을 만들어주세요.
 
 === 오늘 시장 데이터 ===
 VIX: {vix_val} ({'단타금지' if vix_val>=30 else '주의' if vix_val>=20 else '안정'})
@@ -397,13 +393,13 @@ S&P500: {sp_rate:+.2f}%
 === 스윙 추천 TOP3 ===
 {swing_summary}
 
-아래 형식으로 한국어로 답변해주세요. 최대한 간결하게, 핵심만:
+아래 형식으로 한국어로 답변해주세요. 최대한 간결하게:
 
 📌 오늘 시장 한 줄 요약:
-(VIX + 나스닥 + 계절성 종합해서 한 문장)
+(한 문장)
 
 ⚡ 오늘 단타:
-(가능/자제/금지 중 하나 + 이유 한 줄)
+(가능/자제/금지 중 하나 + 이유)
 
 ✅ 오늘 해야 할 일 (최대 5개):
 1.
@@ -418,11 +414,10 @@ S&P500: {sp_rate:+.2f}%
 (스윙 추천 중 가장 좋은 것)
 
 ⚠️ 긴급 주의 종목:
-(손절/방어매도 필요한 종목, 없으면 "없음")
-"""
+(손절/방어매도 필요한 종목, 없으면 없음)"""
 
-    print(f"🔑 API 키 확인: {ANTHROPIC_API_KEY[:20]}...")
     try:
+        print("🤖 Claude API 호출 중...")
         res = requests.post(
             "https://api.anthropic.com/v1/messages",
             headers={
@@ -437,13 +432,22 @@ S&P500: {sp_rate:+.2f}%
             },
             timeout=30
         )
-        return res.json()["content"][0]["text"]
+        print(f"📡 API 응답 상태: {res.status_code}")
+        data = res.json()
+        if "content" in data:
+            result = data["content"][0]["text"]
+            print(f"✅ AI 요약 생성 완료 ({len(result)}자)")
+            return result
+        else:
+            print(f"⚠️ API 응답 오류: {data}")
+            return None
     except Exception as e:
-        print(f"⚠️ Claude API 오류 상세: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"⚠️ Claude API 오류: {e}")
         return None
 
+# =====================================================
+# 이메일 전송
+# =====================================================
 def send_email(subject, html_body):
     msg = MIMEMultipart()
     msg["From"]    = GMAIL_ADDRESS
@@ -458,6 +462,9 @@ def send_email(subject, html_body):
     except Exception as e:
         print(f"❌ 이메일 전송 실패: {e}")
 
+# =====================================================
+# HTML 보고서 생성
+# =====================================================
 def build_report(token):
     today = dt.datetime.now(KST).strftime("%Y년 %m월 %d일 %H:%M")
 
@@ -514,16 +521,15 @@ def build_report(token):
     total_color       = "#e74c3c" if total_profit<0 else "#27ae60"
     max_loss          = int(TOTAL_ASSETS*0.02)
 
-    # ── AI 요약 HTML ──
+    # AI 요약 HTML
     if ai_summary:
-        # 마크다운 간단 변환
         ai_html_content = ai_summary\
-            .replace("📌","<br>📌").replace("⚡","<br>⚡")\
-            .replace("✅","<br>✅").replace("🚫","<br>🚫")\
-            .replace("🎯","<br>🎯").replace("⚠️","<br>⚠️")\
+            .replace("📌 ","<br><b>📌 ").replace("⚡ ","<br><b>⚡ ")\
+            .replace("✅ ","<br><b>✅ ").replace("🚫 ","<br><b>🚫 ")\
+            .replace("🎯 ","<br><b>🎯 ").replace("⚠️ ","<br><b>⚠️ ")\
             .replace("\n","<br>")
         ai_section = f"""
-  <div class="section" style="background:linear-gradient(135deg,#1a1a2e,#16213e);color:white;padding:24px">
+  <div style="background:linear-gradient(135deg,#0d0d1a,#1a1a3e);color:white;padding:24px;border-bottom:3px solid #FFD700">
     <div style="font-size:16px;font-weight:bold;margin-bottom:16px;color:#FFD700">
       🤖 Claude AI 오늘의 핵심 요약
     </div>
@@ -532,9 +538,12 @@ def build_report(token):
     </div>
   </div>"""
     else:
-        ai_section = ""
+        ai_section = """
+  <div style="background:#f39c12;color:white;padding:16px;text-align:center">
+    ⚠️ AI 요약 생성 실패 (ANTHROPIC_API_KEY 확인 필요)
+  </div>"""
 
-    # ── 거시경제 HTML ──
+    # 거시경제 HTML
     macro_rows = ""
     for name, val in macro.items():
         if name in ("미국10년금리","미국2년금리"): continue
@@ -542,7 +551,7 @@ def build_report(token):
         emoji = "🔴" if val["등락률"]<0 else "🟢"
         macro_rows += f"<tr><td>{name}</td><td>{val['가격']:,}</td><td style='color:{color}'>{emoji} {val['등락률']:+.2f}%</td></tr>"
 
-    # ── 포트폴리오 HTML ──
+    # 포트폴리오 HTML
     port_rows = ""
     for r in portfolio_rows:
         s = r["signals"]
@@ -562,7 +571,7 @@ def build_report(token):
           <td style="color:#e74c3c;font-size:11px">{s['atr익절']}</td>
         </tr>"""
 
-    # ── 스윙 추천 HTML ──
+    # 스윙 추천 HTML
     swing_rows = ""
     for i,p in enumerate(swing_picks,1):
         swing_rows += f"""
@@ -577,44 +586,42 @@ def build_report(token):
           <td style="font-size:11px">{p['근거']}</td>
         </tr>"""
 
-    html = f"""
-<!DOCTYPE html>
+    html = f"""<!DOCTYPE html>
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <style>
-  body{{font-family:'Malgun Gothic',sans-serif;background:#f5f7fa;color:#333;margin:0;padding:20px}}
+  body{{font-family:'Malgun Gothic',sans-serif;background:#f5f7fa;color:#333;margin:0;padding:10px}}
   .container{{max-width:1400px;margin:0 auto;background:white;border-radius:12px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,0.1)}}
-  .header{{background:linear-gradient(135deg,#1a1a2e,#16213e,#0f3460);color:white;padding:24px;text-align:center}}
-  .header h1{{margin:0;font-size:22px;letter-spacing:2px}}
-  .section{{padding:20px;border-bottom:1px solid #eee}}
-  .section-title{{font-size:14px;font-weight:bold;color:#1a1a2e;margin-bottom:12px;padding-left:10px;border-left:4px solid #0f3460}}
+  .header{{background:linear-gradient(135deg,#1a1a2e,#16213e,#0f3460);color:white;padding:20px;text-align:center}}
+  .header h1{{margin:0;font-size:20px;letter-spacing:2px}}
+  .section{{padding:16px;border-bottom:1px solid #eee}}
+  .section-title{{font-size:13px;font-weight:bold;color:#1a1a2e;margin-bottom:10px;padding-left:8px;border-left:4px solid #0f3460}}
   table{{width:100%;border-collapse:collapse;font-size:11px}}
-  th{{background:#1a1a2e;color:white;padding:8px 6px;text-align:center}}
-  td{{padding:7px 6px;text-align:center;border-bottom:1px solid #f0f0f0;vertical-align:middle}}
+  th{{background:#1a1a2e;color:white;padding:7px 5px;text-align:center}}
+  td{{padding:6px 5px;text-align:center;border-bottom:1px solid #f0f0f0;vertical-align:middle}}
   tr:hover{{background:#f8f9ff}}
-  .summary-box{{display:flex;gap:12px;margin-bottom:14px;flex-wrap:wrap}}
-  .summary-card{{flex:1;min-width:120px;background:#f8f9ff;border-radius:8px;padding:12px;text-align:center;border:1px solid #e0e4f0}}
-  .summary-card .label{{font-size:11px;color:#888;margin-bottom:4px}}
-  .summary-card .value{{font-size:16px;font-weight:bold}}
-  .market-card{{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px}}
-  .mc{{background:#f8f9ff;border-radius:8px;padding:10px 14px;text-align:center;border:1px solid #e0e4f0;flex:1;min-width:100px}}
-  .mc .ml{{font-size:10px;color:#888}}
-  .mc .mv{{font-size:14px;font-weight:bold}}
-  .footer{{background:#f8f9ff;padding:12px;text-align:center;font-size:10px;color:#999}}
+  .summary-box{{display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap}}
+  .summary-card{{flex:1;min-width:110px;background:#f8f9ff;border-radius:8px;padding:10px;text-align:center;border:1px solid #e0e4f0}}
+  .summary-card .label{{font-size:10px;color:#888;margin-bottom:4px}}
+  .summary-card .value{{font-size:15px;font-weight:bold}}
+  .market-card{{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}}
+  .mc{{background:#f8f9ff;border-radius:6px;padding:8px 10px;text-align:center;border:1px solid #e0e4f0;flex:1;min-width:80px}}
+  .mc .ml{{font-size:9px;color:#888}}
+  .mc .mv{{font-size:13px;font-weight:bold}}
+  .footer{{background:#f8f9ff;padding:10px;text-align:center;font-size:10px;color:#999}}
 </style>
 </head>
 <body>
 <div class="container">
   <div class="header">
     <h1>📊 포트폴리오 일일 보고서</h1>
-    <p style="margin:6px 0 0;opacity:0.8;font-size:13px">{today} | VIX {vix_val} {vix_signal} | {season}</p>
+    <p style="margin:4px 0 0;opacity:0.8;font-size:12px">{today} | VIX {vix_val} {vix_signal} | {season}</p>
   </div>
 
   {ai_section}
 
-  <!-- 시장 현황 요약 -->
   <div class="section">
     <div class="section-title">🌍 시장 현황</div>
     <div class="market-card">
@@ -622,7 +629,6 @@ def build_report(token):
     </div>
   </div>
 
-  <!-- 포트폴리오 -->
   <div class="section">
     <div class="section-title">💼 포트폴리오 현황</div>
     <div class="summary-box">
@@ -645,7 +651,6 @@ def build_report(token):
     </div>
   </div>
 
-  <!-- 스윙 추천 -->
   <div class="section">
     <div class="section-title">🎯 스윙 추천 TOP5</div>
     <div style="overflow-x:auto">
@@ -656,15 +661,15 @@ def build_report(token):
     </div>
   </div>
 
-  <div class="footer">
-    ⚠️ 본 보고서는 참고용이며 투자 판단의 최종 책임은 본인에게 있습니다.
-  </div>
+  <div class="footer">⚠️ 본 보고서는 참고용이며 투자 판단의 최종 책임은 본인에게 있습니다.</div>
 </div>
 </body>
-</html>
-"""
+</html>"""
     return html
 
+# =====================================================
+# 메인
+# =====================================================
 def main():
     print("="*50)
     print("📊 포트폴리오 보고서 생성 시작")
