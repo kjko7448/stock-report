@@ -1,6 +1,6 @@
 # portfolio_report.py
-# 포트폴리오 중심 일일 보고서 생성기 (Claude AI 요약 포함)
-# pip install requests pandas yfinance beautifulsoup4
+# 포트폴리오 중심 일일 보고서 생성기 (Google Sheets 연동 + Claude AI 요약)
+# pip install requests pandas yfinance
 
 import requests
 import pandas as pd
@@ -22,7 +22,6 @@ KST = dt.timezone(dt.timedelta(hours=9))
 APP_KEY            = os.environ.get("APP_KEY", "")
 APP_SECRET         = os.environ.get("APP_SECRET", "")
 ACCOUNT_NO         = os.environ.get("ACCOUNT_NO", "")
-ACCOUNT_CODE       = "01"
 GMAIL_ADDRESS      = os.environ.get("GMAIL_ADDRESS", "")
 GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
 RECEIVE_ADDRESS    = os.environ.get("RECEIVE_ADDRESS", "")
@@ -31,36 +30,68 @@ TOKEN_FILE         = "token.json"
 TOTAL_ASSETS       = 24_000_000
 
 # =====================================================
-# 포트폴리오
+# Google Sheets 연동 (공개 시트에서 읽기)
 # =====================================================
-HOLDINGS = [
-    ("005490", "POSCO홀딩스",                  7,   435500, "KR"),
-    ("005930", "삼성전자",                      4,    60100, "KR"),
-    ("005935", "삼성전자우",                    5,   187520, "KR"),
-    ("007660", "이수페타시스",                  5,   133960, "KR"),
-    ("010780", "아이에스동서",                  1,    38450, "KR"),
-    ("094360", "챔스미디어",                    9,    27361, "KR"),
-    ("247540", "에코프로비엠",                  4,   268000, "KR"),
-    ("304100", "솔트룩스",                      3,    29383, "KR"),
-    ("103590", "일진전기",                      10,   92400, "KR"),
-    ("010120", "LS ELECTRIC",                   4,   259375, "KR"),
-    ("QQQ",    "Invesco QQQ",                   1,   907209, "US"),
-    ("SPYG",   "SPDR S&P500 Growth",            7,   157479, "US"),
-    ("SCHD",   "Schwab Dividend",              26,    40186, "US"),
-    ("VOO",    "Vanguard S&P500",               2,   907785, "US"),
-    ("BOTT",   "THEMES HUMANOID ROBOTICS ETF",  3,    82969, "US"),
-    ("360750", "TIGER 미국S&P500",             55,    24635, "ETF_KR"),
-    ("426030", "TIME 나스닥100",               30,    35102, "ETF_KR"),
-    ("458730", "TIGER 미국배당다운존스",        56,    14074, "ETF_KR"),
-    ("364970", "TIGER 바이오TOP10",            10,     7520, "ETF_KR"),
-    ("465580", "RISE 미국AI밸류체인",          47,    17987, "ETF_KR"),
-    ("464310", "TIGER 글로벌AI&로보틱스INDXX", 10,    17165, "ETF_KR"),
-    ("441680", "TIGER 나스닥100커버드콜",     111,    10719, "ETF_KR"),
-    ("0167A0", "SOL AI반도체TOP2플러스",  5, 21215, "ETF_KR"),
-    ("395160", "KODEX AI반도체TOP2플러스", 3, 45856, "ETF_KR"),
-    ("445290", "KODEX 로봇액티브", 20, 48250, "ETF_KR"),
-    ("487240", "KODEX AI전력핵심설비", 20, 50775, "ETF_KR"),
-]
+SHEET_ID = "1-7TeKv9OucJYMvXN55yQ5w0Rg0Fwi8QQH44jmUfzElg"
+
+def load_holdings_from_sheets():
+    """구글 시트에서 포트폴리오 읽어오기"""
+    url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv"
+    try:
+        print("📊 구글 시트에서 포트폴리오 읽는 중...")
+        df = pd.read_csv(url, dtype=str)
+        df.columns = df.columns.str.strip()
+        holdings = []
+        for _, row in df.iterrows():
+            try:
+                code   = str(row["종목코드"]).strip()
+                name   = str(row["종목명"]).strip()
+                qty    = int(str(row["수량"]).replace(",","").strip())
+                avg    = int(str(row["평단가"]).replace(",","").strip())
+                market = str(row["시장"]).strip()
+                if code and name and qty > 0 and avg > 0:
+                    holdings.append((code, name, qty, avg, market))
+            except:
+                continue
+        print(f"✅ {len(holdings)}개 종목 로드 완료")
+        return holdings
+    except Exception as e:
+        print(f"⚠️ 구글 시트 읽기 실패: {e}")
+        print("📋 기본 포트폴리오 사용")
+        return get_default_holdings()
+
+def get_default_holdings():
+    """구글 시트 실패 시 기본값"""
+    return [
+        ("005490", "POSCO홀딩스",                  10,  424550, "KR"),
+        ("005930", "삼성전자",                       4,   60100, "KR"),
+        ("005935", "삼성전자우",                     5,  187520, "KR"),
+        ("007660", "이수페타시스",                   5,  133960, "KR"),
+        ("010780", "아이에스동서",                   1,   38450, "KR"),
+        ("094360", "챔스미디어",                     9,   27361, "KR"),
+        ("247540", "에코프로비엠",                   8,  235750, "KR"),
+        ("304100", "솔트룩스",                       3,   29383, "KR"),
+        ("010120", "LS ELECTRIC",                    6,  253417, "KR"),
+        ("103590", "일진전기",                      10,   92400, "KR"),
+        ("035420", "NAVER",                         10,  252000, "KR"),
+        ("329180", "HD현대중공업",                   2,  647000, "KR"),
+        ("QQQ",    "Invesco QQQ",                    1,  907209, "US"),
+        ("SPYG",   "SPDR S&P500 Growth",             7,  157479, "US"),
+        ("SCHD",   "Schwab Dividend",               26,   40186, "US"),
+        ("VOO",    "Vanguard S&P500",                2,  907785, "US"),
+        ("BOTT",   "THEMES HUMANOID ROBOTICS ETF",   3,   82969, "US"),
+        ("360750", "TIGER 미국S&P500",              55,   24635, "ETF_KR"),
+        ("426030", "TIME 나스닥100",                30,   35102, "ETF_KR"),
+        ("458730", "TIGER 미국배당다운존스",         56,   14074, "ETF_KR"),
+        ("364970", "TIGER 바이오TOP10",             10,    7520, "ETF_KR"),
+        ("465580", "RISE 미국AI밸류체인",           47,   17987, "ETF_KR"),
+        ("464310", "TIGER 글로벌AI&로보틱스INDXX",  10,   17165, "ETF_KR"),
+        ("441680", "TIGER 나스닥100커버드콜",      111,   10719, "ETF_KR"),
+        ("0167A0", "SOL AI반도체TOP2플러스",         5,   21215, "ETF_KR"),
+        ("395160", "KODEX AI반도체TOP2플러스",       3,   45856, "ETF_KR"),
+        ("445290", "KODEX 로봇액티브",              20,   48250, "ETF_KR"),
+        ("487240", "KODEX AI전력핵심설비",          20,   50775, "ETF_KR"),
+    ]
 
 SWING_CANDIDATES = [
     ("005930", "삼성전자"), ("000660", "SK하이닉스"),
@@ -72,7 +103,7 @@ SWING_CANDIDATES = [
 
 THEME_KEYWORDS = {
     "AI/반도체": ["AI", "반도체", "HBM", "SK하이닉스", "이수페타시스", "솔트룩스"],
-    "전력/전기": ["전력", "전기", "LS", "효성"],
+    "전력/전기": ["전력", "전기", "LS", "효성", "일진"],
     "2차전지":   ["에코프로", "삼성SDI", "LG화학"],
     "조선/해운": ["HD현대", "조선", "해운"],
     "바이오":    ["바이오", "셀트리온", "삼성바이오"],
@@ -87,8 +118,8 @@ def get_theme(name):
 
 def get_recommend_method(name, market):
     etf_kw   = ["TIGER","RISE","SOL","TIME","KODEX","ACE","QQQ","VOO","SCHD","SPYG","BOTT"]
-    large_kw = ["삼성전자","POSCO","LS ELECTRIC","SK하이닉스","현대","삼성바이오","셀트리온"]
-    small_kw = ["챔스미디어","솔트룩스","에코프로","아이에스동서","이수페타시스"]
+    large_kw = ["삼성전자","POSCO","LS ELECTRIC","SK하이닉스","현대","삼성바이오","셀트리온","NAVER"]
+    small_kw = ["챔스미디어","솔트룩스","에코프로","아이에스동서","이수페타시스","일진전기"]
     if market in ("ETF_KR","US") or any(k in name for k in etf_kw):
         return "📊 분할익절", "#27ae60", "ETF/안정형"
     elif any(k in name for k in large_kw):
@@ -237,16 +268,12 @@ def get_turtle_signal(code, price):
     except:
         return "-","#888","-","-","-"
 
-# =====================================================
-# 매매 신호 계산
-# =====================================================
 def calc_signals(avg, current, code, market, qty, high52, low52, current_rate):
     if current==0 or avg==0:
         return {k:"-" for k in ["추가매수","방어매도","터틀익절","분할익절","atr익절","변동성"]}
 
     profit_rate = (current-avg)/avg*100
 
-    # 거래량 확인
     try:
         ticker  = code+".KS" if market in ("KR","ETF_KR") else code
         hist    = yf.Ticker(ticker).history(period="1mo").dropna()
@@ -306,9 +333,6 @@ def calc_signals(avg, current, code, market, qty, high52, low52, current_rate):
         "atr익절":atr_sell,"변동성":f"{vol}({atr_pct}%)",
     }
 
-# =====================================================
-# 스윙 추천
-# =====================================================
 def get_swing_picks(token):
     picks = []
     for code, name in SWING_CANDIDATES:
@@ -357,7 +381,6 @@ def get_seasonality():
 # =====================================================
 def get_ai_summary(portfolio_rows, macro, vix_val, swing_picks):
     print(f"🔑 API 키 확인: {ANTHROPIC_API_KEY[:20] if ANTHROPIC_API_KEY else '없음'}...")
-
     if not ANTHROPIC_API_KEY:
         print("⚠️ ANTHROPIC_API_KEY 없음")
         return None
@@ -365,9 +388,7 @@ def get_ai_summary(portfolio_rows, macro, vix_val, swing_picks):
     port_summary = ""
     for r in portfolio_rows:
         s = r.get("signals", {})
-        profit_rate = r.get("profit_rate", 0)
-        name = r["name"]
-        line = f"{name}: 현재가 {r['price_display']}, 등락률 {r['rate']:+.2f}%, 수익률 {profit_rate:+.1f}%"
+        line = f"{r['name']}: 현재가 {r['price_display']}, 등락률 {r['rate']:+.2f}%, 수익률 {r.get('profit_rate',0):+.1f}%"
         if s.get("추가매수") and s["추가매수"] != "-":
             line += f", 추가매수={s['추가매수']}"
         if s.get("방어매도") and s["방어매도"] != "-":
@@ -468,7 +489,7 @@ def send_email(subject, html_body):
 # =====================================================
 # HTML 보고서 생성
 # =====================================================
-def build_report(token):
+def build_report(token, holdings):
     today = dt.datetime.now(KST).strftime("%Y년 %m월 %d일 %H:%M")
 
     print("🌍 거시경제 수집 중...")
@@ -480,7 +501,7 @@ def build_report(token):
     portfolio_rows = []
     total_invest = total_current = 0
 
-    for code, name, qty, avg, market in HOLDINGS:
+    for code, name, qty, avg, market in holdings:
         print(f"  → {name} 조회 중...")
         if market in ("KR","ETF_KR"):
             price,rate,volume,high52,low52 = get_kr_price(token,code)
@@ -633,7 +654,7 @@ def build_report(token):
   </div>
 
   <div class="section">
-    <div class="section-title">💼 포트폴리오 현황</div>
+    <div class="section-title">💼 포트폴리오 현황 ({len(holdings)}종목)</div>
     <div class="summary-box">
       <div class="summary-card"><div class="label">총 투자금</div><div class="value">{total_invest:,.0f}원</div></div>
       <div class="summary-card"><div class="label">현재 평가금</div><div class="value">{total_current:,.0f}원</div></div>
@@ -664,7 +685,7 @@ def build_report(token):
     </div>
   </div>
 
-  <div class="footer">⚠️ 본 보고서는 참고용이며 투자 판단의 최종 책임은 본인에게 있습니다.</div>
+  <div class="footer">⚠️ 본 보고서는 참고용이며 투자 판단의 최종 책임은 본인에게 있습니다. | 구글 시트 연동</div>
 </div>
 </body>
 </html>"""
@@ -677,11 +698,17 @@ def main():
     print("="*50)
     print("📊 포트폴리오 보고서 생성 시작")
     print("="*50)
+
+    # 구글 시트에서 포트폴리오 읽기
+    holdings = load_holdings_from_sheets()
+
     token = get_token()
-    html  = build_report(token)
+    html  = build_report(token, holdings)
+
     with open("portfolio_report.html","w",encoding="utf-8") as f:
         f.write(html)
     print("✅ 보고서 저장 완료")
+
     today_str = dt.datetime.now(KST).strftime("%Y/%m/%d")
     send_email(f"📊 [{today_str}] 포트폴리오 보고서", html)
     print("✅ 완료!")
