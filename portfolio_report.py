@@ -874,3 +874,17 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# =====================================================
+# 탑다운 스크리너 연동 (sector_screener.py 필요)
+# =====================================================
+def get_topdown_picks(token, liquidity_score):
+    """탑다운 방식으로 오늘 매수 후보 종목 발굴"""
+    try:
+        from sector_screener import run_topdown_screener, get_recommended_sectors, SECTORS
+        results, rec_sectors, phase_msg = run_topdown_screener(token, liquidity_score)
+        return results, rec_sectors, phase_msg
+    except Exception as e:
+        print(f"⚠️ 탑다운 스크리너 오류: {e}")
+        return [], [], "-"
