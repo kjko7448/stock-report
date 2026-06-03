@@ -1,5 +1,6 @@
 # portfolio_report.py
-# 포트폴리오 중심 일일 보고서 생성기 (Google Sheets 연동 + Claude AI 요약)
+# 포트폴리오 중심 일일 보고서 생성기
+# Google Sheets 연동 + Claude AI 요약 + FRED 유동성 지표
 # pip install requests pandas yfinance
 
 import requests
@@ -21,21 +22,135 @@ KST = dt.timezone(dt.timedelta(hours=9))
 # =====================================================
 APP_KEY            = os.environ.get("APP_KEY", "")
 APP_SECRET         = os.environ.get("APP_SECRET", "")
-ACCOUNT_NO         = os.environ.get("ACCOUNT_NO", "")
 GMAIL_ADDRESS      = os.environ.get("GMAIL_ADDRESS", "")
 GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
 RECEIVE_ADDRESS    = os.environ.get("RECEIVE_ADDRESS", "")
 ANTHROPIC_API_KEY  = os.environ.get("ANTHROPIC_API_KEY", "")
+FRED_API_KEY       = os.environ.get("FRED_API_KEY", "")
 TOKEN_FILE         = "token.json"
 TOTAL_ASSETS       = 24_000_000
+SHEET_ID           = "1-7TeKv9OucJYMvXN55yQ5w0Rg0Fwi8QQH44jmUfzElg"
 
 # =====================================================
-# Google Sheets 연동 (공개 시트에서 읽기)
+# FRED 유동성 지표
 # =====================================================
-SHEET_ID = "1-7TeKv9OucJYMvXN55yQ5w0Rg0Fwi8QQH44jmUfzElg"
+def get_fred_data(series_id, limit=2):
+    """FRED API에서 데이터 조회"""
+    try:
+        url = f"https://api.stlouisfed.org/fred/series/observations"
+        params = {
+            "series_id": series_id,
+            "api_key": FRED_API_KEY,
+            "file_type": "json",
+            "sort_order": "desc",
+            "limit": limit,
+        }
+        res = requests.get(url, params=params, timeout=10)
+        data = res.json()
+        obs = data.get("observations", [])
+        if len(obs) >= 1:
+            latest = float(obs[0]["value"]) if obs[0]["value"] != "." else 0
+            prev   = float(obs[1]["value"]) if len(obs) >= 2 and obs[1]["value"] != "." else latest
+            change = latest - prev
+            return latest, change, obs[0]["date"]
+        return 0, 0, "-"
+    except Exception as e:
+        print(f"  ⚠️ FRED {series_id} 오류: {e}")
+        return 0, 0, "-"
 
+def get_liquidity_data():
+    """유동성 핵심 지표 수집"""
+    print("💧 FRED 유동성 지표 수집 중...")
+    indicators = {
+        "역레포(RRP)":      ("RRPONTSYD",  "$B", "감소=유동성 공급"),
+        "TGA 잔액":         ("WTREGEN",    "$B", "감소=유동성 공급"),
+        "연준 총자산":      ("WALCL",      "$B", "감소=QT 진행"),
+        "지급준비금":       ("WRESBAL",    "$B", "3조↑=안정"),
+        "하이일드 스프레드":("BAMLH0A0HYM2","%", "8↑=위기"),
+        "금융스트레스지수": ("STLFSI4",    "",   "0↑=스트레스"),
+        "M2 통화량":        ("M2SL",       "$B", "증가=유동성↑"),
+        "장단기 금리차":    ("T10Y2Y",     "%",  "음수=침체경고"),
+    }
+    result = {}
+    for name, (series_id, unit, desc) in indicators.items():
+        val, change, date = get_fred_data(series_id)
+        result[name] = {
+            "값": round(val, 2),
+            "변화": round(change, 2),
+            "날짜": date,
+            "단위": unit,
+            "설명": desc,
+        }
+    return result
+
+def get_liquidity_score(liquidity):
+    """유동성 종합 점수 계산 (100점 만점)"""
+    score = 50  # 기본 50점
+    signals = []
+
+    # 역레포 감소 → 유동성 공급 (긍정)
+    rrp = liquidity.get("역레포(RRP)", {})
+    if rrp.get("변화", 0) < -10:
+        score += 10
+        signals.append("✅ 역레포 감소 (유동성 공급)")
+    elif rrp.get("변화", 0) > 10:
+        score -= 10
+        signals.append("⚠️ 역레포 증가 (유동성 흡수)")
+
+    # TGA 감소 → 유동성 공급 (긍정)
+    tga = liquidity.get("TGA 잔액", {})
+    if tga.get("변화", 0) < -20:
+        score += 10
+        signals.append("✅ TGA 감소 (정부 지출 확대)")
+    elif tga.get("변화", 0) > 20:
+        score -= 10
+        signals.append("⚠️ TGA 증가 (유동성 흡수)")
+
+    # 하이일드 스프레드
+    hy = liquidity.get("하이일드 스프레드", {})
+    if hy.get("값", 5) < 4:
+        score += 10
+        signals.append("✅ 하이일드 스프레드 정상")
+    elif hy.get("값", 5) > 6:
+        score -= 15
+        signals.append("🔴 하이일드 스프레드 확대 (신용위험)")
+
+    # 금융스트레스지수
+    fsi = liquidity.get("금융스트레스지수", {})
+    if fsi.get("값", 0) < 0:
+        score += 10
+        signals.append("✅ 금융 스트레스 낮음")
+    elif fsi.get("값", 0) > 1:
+        score -= 15
+        signals.append("🔴 금융 스트레스 높음")
+
+    # 장단기 금리차
+    spread = liquidity.get("장단기 금리차", {})
+    if spread.get("값", 0) > 0.5:
+        score += 10
+        signals.append("✅ 금리차 정상 (경기 양호)")
+    elif spread.get("값", 0) < -0.5:
+        score -= 10
+        signals.append("⚠️ 금리차 역전 (침체 경고)")
+
+    score = max(0, min(100, score))
+
+    if score >= 70:
+        phase = "🟢 유동성 확장 (성장주 우위)"
+        phase_color = "#27ae60"
+    elif score >= 50:
+        phase = "🟡 유동성 중립"
+        phase_color = "#f39c12"
+    else:
+        phase = "🔴 유동성 수축 (방어주 우위)"
+        phase_color = "#e74c3c"
+
+    return score, phase, phase_color, signals
+
+# =====================================================
+# Google Sheets 연동
+# =====================================================
 def load_holdings_from_sheets():
-    """구글 시트에서 포트폴리오 읽어오기"""
     url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv"
     try:
         print("📊 구글 시트에서 포트폴리오 읽는 중...")
@@ -57,11 +172,9 @@ def load_holdings_from_sheets():
         return holdings
     except Exception as e:
         print(f"⚠️ 구글 시트 읽기 실패: {e}")
-        print("📋 기본 포트폴리오 사용")
         return get_default_holdings()
 
 def get_default_holdings():
-    """구글 시트 실패 시 기본값"""
     return [
         ("005490", "POSCO홀딩스",                  10,  424550, "KR"),
         ("005930", "삼성전자",                       4,   60100, "KR"),
@@ -110,23 +223,34 @@ THEME_KEYWORDS = {
     "로봇":      ["로봇", "ROBOT", "HUMANOID"],
 }
 
+# 조류(구조적) vs 파도(사이클) 섹터 분류
+STRUCTURAL_SECTORS = ["AI", "반도체", "전력", "전기", "로봇", "방산", "우주"]
+CYCLICAL_SECTORS   = ["조선", "화학", "금융", "소비재", "해운"]
+
 def get_theme(name):
     for theme, words in THEME_KEYWORDS.items():
         if any(w.lower() in name.lower() for w in words):
             return theme
     return "일반"
 
+def get_sector_type(name):
+    if any(w in name for w in STRUCTURAL_SECTORS):
+        return "🌊 조류(구조적)", "#8e44ad"
+    elif any(w in name for w in CYCLICAL_SECTORS):
+        return "🌀 파도(사이클)", "#2980b9"
+    return "일반", "#888"
+
 def get_recommend_method(name, market):
     etf_kw   = ["TIGER","RISE","SOL","TIME","KODEX","ACE","QQQ","VOO","SCHD","SPYG","BOTT"]
     large_kw = ["삼성전자","POSCO","LS ELECTRIC","SK하이닉스","현대","삼성바이오","셀트리온","NAVER"]
     small_kw = ["챔스미디어","솔트룩스","에코프로","아이에스동서","이수페타시스","일진전기"]
     if market in ("ETF_KR","US") or any(k in name for k in etf_kw):
-        return "📊 분할익절", "#27ae60", "ETF/안정형"
+        return "📊 분할익절", "#27ae60"
     elif any(k in name for k in large_kw):
-        return "🐢 터틀익절", "#8e44ad", "대형주"
+        return "🐢 터틀익절", "#8e44ad"
     elif any(k in name for k in small_kw):
-        return "📈 ATR익절", "#e74c3c", "소형/테마주"
-    return "📊 분할익절", "#27ae60", "기본"
+        return "📈 ATR익절", "#e74c3c"
+    return "📊 분할익절", "#27ae60"
 
 # =====================================================
 # 토큰
@@ -187,7 +311,6 @@ def get_macro():
         "S&P500":"^GSPC","나스닥":"^IXIC","다우":"^DJI",
         "VIX":"^VIX","달러인덱스":"DX-Y.NYB",
         "원달러환율":"USDKRW=X","WTI유가":"CL=F","금":"GC=F",
-        "미국10년금리":"^TNX","미국2년금리":"^IRX",
     }
     result = {}
     for name, sym in tickers.items():
@@ -333,24 +456,35 @@ def calc_signals(avg, current, code, market, qty, high52, low52, current_rate):
         "atr익절":atr_sell,"변동성":f"{vol}({atr_pct}%)",
     }
 
-def get_swing_picks(token):
+def get_swing_picks(token, liquidity_score):
     picks = []
     for code, name in SWING_CANDIDATES:
         price,rate,volume,high52,low52 = get_kr_price(token,code)
         if price==0: continue
         score,reason = 0,[]
+
         if low52>0 and (price-low52)/low52*100<=30: score+=20; reason.append("52주저가근접")
         if high52>0 and -20<=(price-high52)/high52*100<=-5: score+=20; reason.append("고점눌림")
         if 1<=rate<=5: score+=20; reason.append("안정상승")
         elif rate>5:   score+=10; reason.append("강한상승")
         if volume>=1_000_000: score+=20; reason.append("거래량풍부")
+
         rsi = get_rsi(code,"KR")
         ma_sig,ma_col = get_ma_cross(code,"KR")
         if rsi<=35: score+=15; reason.append(f"RSI과매도({rsi})")
         if "골든크로스" in ma_sig: score+=15; reason.append("골든크로스")
         elif "데드크로스" in ma_sig: score-=15
+
         turtle_sig,turtle_col,high20,low20,rec_buy = get_turtle_signal(code,price)
         if "매수신호" in turtle_sig: score+=15; reason.append("터틀매수")
+
+        # 유동성 점수에 따라 섹터 가점
+        sector_type, _ = get_sector_type(name)
+        if liquidity_score >= 70 and "조류" in sector_type:
+            score += 10; reason.append("유동성확장+구조적섹터")
+        elif liquidity_score < 50 and "파도" in sector_type:
+            score -= 10
+
         picks.append({
             "종목명":name,"현재가":price,"추천매수가":int(price*0.98),
             "추천주수":max(1,int(1_000_000//(price*0.98))),
@@ -358,6 +492,7 @@ def get_swing_picks(token):
             "RSI":rsi,"MA신호":ma_sig,"MA색상":ma_col,
             "터틀신호":turtle_sig,"터틀색상":turtle_col,
             "20캔들고점":high20,"20캔들저점":low20,"추천투자금":rec_buy,
+            "섹터타입":sector_type,
         })
     return sorted(picks,key=lambda x:x["점수"],reverse=True)[:5]
 
@@ -379,16 +514,15 @@ def get_seasonality():
 # =====================================================
 # Claude AI 요약
 # =====================================================
-def get_ai_summary(portfolio_rows, macro, vix_val, swing_picks):
+def get_ai_summary(portfolio_rows, macro, vix_val, swing_picks, liquidity_score, liquidity_phase):
     print(f"🔑 API 키 확인: {ANTHROPIC_API_KEY[:20] if ANTHROPIC_API_KEY else '없음'}...")
     if not ANTHROPIC_API_KEY:
-        print("⚠️ ANTHROPIC_API_KEY 없음")
         return None
 
     port_summary = ""
     for r in portfolio_rows:
         s = r.get("signals", {})
-        line = f"{r['name']}: 현재가 {r['price_display']}, 등락률 {r['rate']:+.2f}%, 수익률 {r.get('profit_rate',0):+.1f}%"
+        line = f"{r['name']}: 등락률 {r['rate']:+.2f}%, 수익률 {r.get('profit_rate',0):+.1f}%"
         if s.get("추가매수") and s["추가매수"] != "-":
             line += f", 추가매수={s['추가매수']}"
         if s.get("방어매도") and s["방어매도"] != "-":
@@ -397,33 +531,28 @@ def get_ai_summary(portfolio_rows, macro, vix_val, swing_picks):
 
     swing_summary = ""
     for p in swing_picks[:3]:
-        swing_summary += f"{p['종목명']}: 추천가 {p['추천매수가']:,}원, {p['터틀신호']}, RSI {p['RSI']}\n"
+        swing_summary += f"{p['종목명']}: {p['터틀신호']}, RSI {p['RSI']}, {p['섹터타입']}\n"
 
     nq_rate = macro.get("나스닥",{}).get("등락률",0)
-    sp_rate = macro.get("S&P500",{}).get("등락률",0)
     season  = get_seasonality()
 
-    prompt = f"""당신은 주식 투자 어시스턴트입니다. 아래 데이터를 분석해서 투자자가 오늘 바로 행동할 수 있는 핵심 요약을 만들어주세요.
+    prompt = f"""당신은 주식 투자 어시스턴트입니다. 아래 데이터를 분석해서 오늘 바로 행동할 수 있는 핵심 요약을 만들어주세요.
 
-=== 오늘 시장 데이터 ===
-VIX: {vix_val} ({'단타금지' if vix_val>=30 else '주의' if vix_val>=20 else '안정'})
-나스닥: {nq_rate:+.2f}%
-S&P500: {sp_rate:+.2f}%
-계절성: {season}
+=== 시장 데이터 ===
+VIX: {vix_val} / 나스닥: {nq_rate:+.2f}% / 계절성: {season}
+유동성 점수: {liquidity_score}점 / 시장 국면: {liquidity_phase}
 
-=== 내 포트폴리오 ===
+=== 포트폴리오 ===
 {port_summary}
 
 === 스윙 추천 TOP3 ===
 {swing_summary}
 
-아래 형식으로 한국어로 답변해주세요. 최대한 간결하게:
+아래 형식으로 간결하게 답변:
 
 📌 오늘 시장 한 줄 요약:
-(한 문장)
 
-⚡ 오늘 단타:
-(가능/자제/금지 중 하나 + 이유)
+⚡ 오늘 단타: (가능/자제/금지 + 이유)
 
 ✅ 오늘 해야 할 일 (최대 5개):
 1.
@@ -435,10 +564,8 @@ S&P500: {sp_rate:+.2f}%
 2.
 
 🎯 주목할 종목 (최대 3개):
-(스윙 추천 중 가장 좋은 것)
 
-⚠️ 긴급 주의 종목:
-(손절/방어매도 필요한 종목, 없으면 없음)"""
+⚠️ 긴급 주의 종목: (없으면 없음)"""
 
     try:
         print("🤖 Claude API 호출 중...")
@@ -456,14 +583,14 @@ S&P500: {sp_rate:+.2f}%
             },
             timeout=30
         )
-        print(f"📡 API 응답 상태: {res.status_code}")
+        print(f"📡 API 응답: {res.status_code}")
         data = res.json()
         if "content" in data:
             result = data["content"][0]["text"]
-            print(f"✅ AI 요약 생성 완료 ({len(result)}자)")
+            print(f"✅ AI 요약 완료 ({len(result)}자)")
             return result
         else:
-            print(f"⚠️ API 응답 오류: {data}")
+            print(f"⚠️ 응답 오류: {data}")
             return None
     except Exception as e:
         print(f"⚠️ Claude API 오류: {e}")
@@ -497,6 +624,10 @@ def build_report(token, holdings):
     vix_signal, vix_color, vix_val = get_vix_signal(macro)
     season = get_seasonality()
 
+    print("💧 FRED 유동성 지표 수집 중...")
+    liquidity = get_liquidity_data()
+    liq_score, liq_phase, liq_color, liq_signals = get_liquidity_score(liquidity)
+
     print("💼 포트폴리오 수집 중...")
     portfolio_rows = []
     total_invest = total_current = 0
@@ -517,10 +648,11 @@ def build_report(token, holdings):
         total_invest  += invest
         total_current += current_val if price else invest
 
-        signals  = calc_signals(avg,price,code,market,qty,high52,low52,rate)
-        rsi      = get_rsi(code,market)
+        signals       = calc_signals(avg,price,code,market,qty,high52,low52,rate)
+        rsi           = get_rsi(code,market)
         ma_sig,ma_col = get_ma_cross(code,market)
-        rec_method,rec_color,rec_reason = get_recommend_method(name,market)
+        rec_method,rec_color = get_recommend_method(name,market)
+        sector_type,sector_color = get_sector_type(name)
 
         portfolio_rows.append({
             "name":name,"market":market,"qty":qty,"avg":avg,
@@ -531,14 +663,15 @@ def build_report(token, holdings):
             "signals":signals,"rsi":rsi,
             "rsi_color":"#e74c3c" if rsi>=70 else "#27ae60" if rsi<=35 else "#333",
             "ma_sig":ma_sig,"ma_col":ma_col,
-            "rec_method":rec_method,"rec_color":rec_color,"rec_reason":rec_reason,
+            "rec_method":rec_method,"rec_color":rec_color,
+            "sector_type":sector_type,"sector_color":sector_color,
         })
 
     print("🎯 스윙 추천 분석 중...")
-    swing_picks = get_swing_picks(token)
+    swing_picks = get_swing_picks(token, liq_score)
 
     print("🤖 Claude AI 요약 생성 중...")
-    ai_summary = get_ai_summary(portfolio_rows, macro, vix_val, swing_picks)
+    ai_summary = get_ai_summary(portfolio_rows, macro, vix_val, swing_picks, liq_score, liq_phase)
 
     total_profit      = total_current-total_invest
     total_profit_rate = total_profit/total_invest*100 if total_invest>0 else 0
@@ -547,33 +680,40 @@ def build_report(token, holdings):
 
     # AI 요약 HTML
     if ai_summary:
-        ai_html_content = ai_summary\
+        ai_html = ai_summary\
             .replace("📌 ","<br><b>📌 ").replace("⚡ ","<br><b>⚡ ")\
             .replace("✅ ","<br><b>✅ ").replace("🚫 ","<br><b>🚫 ")\
             .replace("🎯 ","<br><b>🎯 ").replace("⚠️ ","<br><b>⚠️ ")\
             .replace("\n","<br>")
         ai_section = f"""
   <div style="background:linear-gradient(135deg,#0d0d1a,#1a1a3e);color:white;padding:24px;border-bottom:3px solid #FFD700">
-    <div style="font-size:16px;font-weight:bold;margin-bottom:16px;color:#FFD700">
-      🤖 Claude AI 오늘의 핵심 요약
-    </div>
-    <div style="font-size:13px;line-height:2;color:#ECF0F1">
-      {ai_html_content}
-    </div>
+    <div style="font-size:16px;font-weight:bold;margin-bottom:14px;color:#FFD700">🤖 Claude AI 오늘의 핵심 요약</div>
+    <div style="font-size:13px;line-height:2;color:#ECF0F1">{ai_html}</div>
   </div>"""
     else:
-        ai_section = """
-  <div style="background:#f39c12;color:white;padding:16px;text-align:center">
-    ⚠️ AI 요약 생성 실패 (ANTHROPIC_API_KEY 확인 필요)
-  </div>"""
+        ai_section = "<div style='background:#f39c12;color:white;padding:14px;text-align:center'>⚠️ AI 요약 생성 실패</div>"
+
+    # 유동성 지표 HTML
+    liq_rows = ""
+    for name, val in liquidity.items():
+        change_color = "#27ae60" if val["변화"] < 0 else "#e74c3c" if val["변화"] > 0 else "#888"
+        if name in ("역레포(RRP)","TGA 잔액"):
+            change_color = "#27ae60" if val["변화"] < 0 else "#e74c3c"
+        liq_rows += f"""
+        <tr>
+          <td><b>{name}</b><br><small style="color:#888">{val['설명']}</small></td>
+          <td>{val['값']:,.1f}{val['단위']}</td>
+          <td style="color:{change_color}">{val['변화']:+.2f}{val['단위']}</td>
+          <td style="font-size:10px;color:#666">{val['날짜']}</td>
+        </tr>"""
+
+    liq_signal_html = "".join([f"<div style='font-size:12px;margin-bottom:4px'>{s}</div>" for s in liq_signals])
 
     # 거시경제 HTML
-    macro_rows = ""
-    for name, val in macro.items():
-        if name in ("미국10년금리","미국2년금리"): continue
-        color = "#e74c3c" if val["등락률"]<0 else "#27ae60"
-        emoji = "🔴" if val["등락률"]<0 else "🟢"
-        macro_rows += f"<tr><td>{name}</td><td>{val['가격']:,}</td><td style='color:{color}'>{emoji} {val['등락률']:+.2f}%</td></tr>"
+    macro_html = "".join([
+        f"<div class='mc'><div class='ml'>{n}</div><div class='mv' style='color:{'#e74c3c' if v['등락률']<0 else '#27ae60'}'>{v['등락률']:+.2f}%</div></div>"
+        for n,v in macro.items()
+    ])
 
     # 포트폴리오 HTML
     port_rows = ""
@@ -581,13 +721,15 @@ def build_report(token, holdings):
         s = r["signals"]
         port_rows += f"""
         <tr>
-          <td><b>{r['name']}</b><br><small style="color:#999">{r['market']}</small></td>
+          <td><b>{r['name']}</b><br>
+            <small style="color:{r['sector_color']}">{r['sector_type']}</small>
+          </td>
           <td>{r['price_display']}</td>
           <td style="color:{r['rate_color']}">{r['rate']:+.2f}%</td>
           <td style="color:{r['profit_color']}">{r['profit']:+,.0f}원<br>({r['profit_rate']:+.1f}%)</td>
           <td style="color:{r['rsi_color']};font-weight:bold">{r['rsi']}</td>
           <td style="color:{r['ma_col']};font-size:11px">{r['ma_sig']}</td>
-          <td style="background:{r['rec_color']}22;color:{r['rec_color']};font-size:11px;font-weight:bold">{r['rec_method']}</td>
+          <td style="color:{r['rec_color']};font-size:11px;font-weight:bold">{r['rec_method']}</td>
           <td style="color:#2980b9;font-size:11px">{s['추가매수']}</td>
           <td style="color:#e67e22;font-size:11px">{s['방어매도']}</td>
           <td style="color:#8e44ad;font-size:11px">{s['터틀익절']}</td>
@@ -600,7 +742,7 @@ def build_report(token, holdings):
     for i,p in enumerate(swing_picks,1):
         swing_rows += f"""
         <tr>
-          <td><b>{i}. {p['종목명']}</b></td>
+          <td><b>{i}. {p['종목명']}</b><br><small style="color:#888">{p['섹터타입']}</small></td>
           <td>{p['현재가']:,}원</td>
           <td style="color:#2980b9"><b>{p['추천매수가']:,}원</b></td>
           <td style="color:{'#e74c3c' if p['RSI']>=70 else '#27ae60' if p['RSI']<=35 else '#333'}">{p['RSI']}</td>
@@ -634,6 +776,7 @@ def build_report(token, holdings):
   .mc{{background:#f8f9ff;border-radius:6px;padding:8px 10px;text-align:center;border:1px solid #e0e4f0;flex:1;min-width:80px}}
   .mc .ml{{font-size:9px;color:#888}}
   .mc .mv{{font-size:13px;font-weight:bold}}
+  .liq-box{{background:#f0f8ff;border:1px solid #3498db;border-radius:8px;padding:14px;margin-bottom:12px}}
   .footer{{background:#f8f9ff;padding:10px;text-align:center;font-size:10px;color:#999}}
 </style>
 </head>
@@ -646,15 +789,35 @@ def build_report(token, holdings):
 
   {ai_section}
 
+  <!-- 시장 현황 -->
   <div class="section">
     <div class="section-title">🌍 시장 현황</div>
-    <div class="market-card">
-      {"".join([f"<div class='mc'><div class='ml'>{n}</div><div class='mv' style='color:{'#e74c3c' if v['등락률']<0 else '#27ae60'}'>{v['등락률']:+.2f}%</div></div>" for n,v in macro.items() if n not in ("미국10년금리","미국2년금리")])}
+    <div class="market-card">{macro_html}</div>
+  </div>
+
+  <!-- FRED 유동성 지표 -->
+  <div class="section">
+    <div class="section-title">💧 FRED 유동성 지표 (시장 국면 판별)</div>
+    <div class="liq-box">
+      <div style="display:flex;align-items:center;gap:16px;margin-bottom:12px">
+        <div>
+          <div style="font-size:22px;font-weight:bold;color:{liq_color}">{liq_score}점</div>
+          <div style="font-size:14px;color:{liq_color};font-weight:bold">{liq_phase}</div>
+        </div>
+        <div>{liq_signal_html}</div>
+      </div>
+    </div>
+    <div style="overflow-x:auto">
+    <table>
+      <tr><th>지표</th><th>현재값</th><th>전주 대비</th><th>기준일</th></tr>
+      {liq_rows}
+    </table>
     </div>
   </div>
 
+  <!-- 포트폴리오 -->
   <div class="section">
-    <div class="section-title">💼 포트폴리오 현황 ({len(holdings)}종목)</div>
+    <div class="section-title">💼 포트폴리오 현황 ({len(holdings)}종목) | 🌊 조류(구조적) 🌀 파도(사이클)</div>
     <div class="summary-box">
       <div class="summary-card"><div class="label">총 투자금</div><div class="value">{total_invest:,.0f}원</div></div>
       <div class="summary-card"><div class="label">현재 평가금</div><div class="value">{total_current:,.0f}원</div></div>
@@ -665,7 +828,7 @@ def build_report(token, holdings):
     <div style="overflow-x:auto">
     <table>
       <tr>
-        <th>종목명</th><th>현재가</th><th>등락률</th><th>평가손익</th>
+        <th>종목명/섹터</th><th>현재가</th><th>등락률</th><th>평가손익</th>
         <th>RSI</th><th>MA신호</th><th>추천기법</th>
         <th>추가매수</th><th>방어매도</th>
         <th>🐢터틀익절</th><th>📊분할익절</th><th>📈ATR익절</th>
@@ -675,17 +838,18 @@ def build_report(token, holdings):
     </div>
   </div>
 
+  <!-- 스윙 추천 -->
   <div class="section">
-    <div class="section-title">🎯 스윙 추천 TOP5</div>
+    <div class="section-title">🎯 스윙 추천 TOP5 (유동성 점수 {liq_score}점 반영)</div>
     <div style="overflow-x:auto">
     <table>
-      <tr><th>종목명</th><th>현재가</th><th>추천매수가</th><th>RSI</th><th>MA신호</th><th>터틀신호</th><th>추천투자금</th><th>근거</th></tr>
+      <tr><th>종목명/섹터</th><th>현재가</th><th>추천매수가</th><th>RSI</th><th>MA신호</th><th>터틀신호</th><th>추천투자금</th><th>근거</th></tr>
       {swing_rows}
     </table>
     </div>
   </div>
 
-  <div class="footer">⚠️ 본 보고서는 참고용이며 투자 판단의 최종 책임은 본인에게 있습니다. | 구글 시트 연동</div>
+  <div class="footer">⚠️ 본 보고서는 참고용이며 투자 판단의 최종 책임은 본인에게 있습니다. | FRED + Google Sheets + Claude AI</div>
 </div>
 </body>
 </html>"""
@@ -698,17 +862,12 @@ def main():
     print("="*50)
     print("📊 포트폴리오 보고서 생성 시작")
     print("="*50)
-
-    # 구글 시트에서 포트폴리오 읽기
     holdings = load_holdings_from_sheets()
-
-    token = get_token()
-    html  = build_report(token, holdings)
-
+    token    = get_token()
+    html     = build_report(token, holdings)
     with open("portfolio_report.html","w",encoding="utf-8") as f:
         f.write(html)
     print("✅ 보고서 저장 완료")
-
     today_str = dt.datetime.now(KST).strftime("%Y/%m/%d")
     send_email(f"📊 [{today_str}] 포트폴리오 보고서", html)
     print("✅ 완료!")
