@@ -553,7 +553,15 @@ def get_sector_health(liquidity_score):
             elif stype=="조류": fit_score=40; fit="⚠️ 주의"
             else:               fit_score=20; fit="❌ 비추"
 
-        total = fit_score + min(20, max(-20, rate_5d*2))
+        # 미국 ETF 5일 수익률 가중치 대폭 강화
+        # 기존: ±20점 → 변경: ±40점
+        etf_bonus = min(40, max(-40, rate_5d*4))
+
+        # ETF 마이너스면 조류여도 강등
+        if rate_5d < -2 and stype == "조류":
+            fit_score -= 20  # 조류인데 미국 ETF 약세면 패널티
+
+        total = fit_score + etf_bonus
         results.append({
             "섹터":sector_name,"타입":stype,"us_etf":us_etf,
             "5일수익률":rate_5d,"적합도":fit,"종합점수":round(total,1),
