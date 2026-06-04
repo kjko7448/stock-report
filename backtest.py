@@ -39,7 +39,7 @@ BACKTEST_STOCKS = {
 BENCHMARK = "^KS11"  # KOSPI
 
 # 백테스트 기간
-START_DATE = "2026-01-02"
+START_DATE = "2023-01-02"
 END_DATE   = dt.datetime.now(KST).strftime("%Y-%m-%d")
 
 # =====================================================
