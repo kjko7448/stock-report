@@ -420,53 +420,103 @@ def get_leader_score(code, name, price, rate, volume, high52, low52, sector_name
 # =====================================================
 def get_entry_analysis(code, price, high52, low52, rsi):
     """
-    고점 vs 더 오를 가능성 판단
-    + 추천 매수가 계산
+    종목 타입 자동 분류 + 타입별 추천 매수가 계산
+
+    A타입 (눌림형) → MA20 기준 매수
+    B타입 (돌파형) → 현재가 -0.5% (즉시 매수)
+    C타입 (횡보형) → 볼린저밴드 하단 매수
     """
     try:
         ticker = code + ".KS"
-        hist   = yf.Ticker(ticker).history(period="3mo").dropna()
+        hist   = yf.Ticker(ticker).history(period="2mo").dropna()
         if len(hist) < 20 or price == 0:
-            return "-", "-", price, "분석불가"
+            return "-", "-", price, "A타입(눌림형)"
 
-        # 과열도 체크
-        curr  = hist["Close"].iloc[-1]
-        ma20  = hist["Close"].rolling(20).mean().iloc[-1]
-        ma60  = hist["Close"].rolling(60).mean().iloc[-1] if len(hist)>=60 else ma20
-
-        # 볼린저밴드
-        std20 = hist["Close"].rolling(20).std().iloc[-1]
+        # 지표 계산
+        ma20     = hist["Close"].rolling(20).mean().iloc[-1]
+        std20    = hist["Close"].rolling(20).std().iloc[-1]
         bb_upper = ma20 + 2*std20
         bb_lower = ma20 - 2*std20
+        bb_width = (bb_upper-bb_lower)/ma20*100
 
-        overheat_count = 0
-        if rsi >= 70:        overheat_count += 1
-        if curr > bb_upper:  overheat_count += 1
-        if curr > ma20 * 1.15: overheat_count += 1
+        # 최근 20일 평균 눌림 깊이
+        recent   = hist.tail(20)
+        pullback = ((recent["High"]-recent["Low"])/recent["High"]*100).mean()
 
-        # 업사이드 추정
-        atr = hist["High"].tail(14).mean() - hist["Low"].tail(14).mean()
-        target_price = int(curr + atr * 3)
-        upside = round((target_price - curr) / curr * 100, 1)
+        # 신고가 근접도
+        near_high = (price-high52)/high52*100 if high52>0 else -10
 
-        # 추천 매수가
-        if overheat_count >= 2:
-            # 과열 → 눌림 기다리기
-            rec_buy = int(ma20 * 0.99)
-            heat_msg = "🔴 과열 → 눌림 대기"
-        elif overheat_count == 1:
-            # 약간 과열 → 현재가 -1~2%
-            rec_buy = int(curr * 0.98)
-            heat_msg = "🟠 약과열 → -2% 진입"
+        # 거래량 급증
+        avg_vol   = hist["Volume"].tail(20).mean()
+        now_vol   = hist["Volume"].iloc[-1]
+        vol_surge = now_vol/avg_vol if avg_vol>0 else 1
+
+        # 5일 수익률
+        ret_5d = (hist["Close"].iloc[-1]-hist["Close"].iloc[-5])/hist["Close"].iloc[-5]*100 if len(hist)>=5 else 0
+
+        # 타입 점수
+        b_score = a_score = c_score = 0
+        if pullback<1.5:    b_score+=3
+        elif pullback<3.0:  a_score+=3
+        else:               c_score+=3
+        if near_high>=-3:   b_score+=3
+        elif near_high>=-10:a_score+=2
+        else:               c_score+=2
+        if vol_surge>=2:    b_score+=2
+        elif vol_surge>=1.2:a_score+=1
+        else:               c_score+=1
+        if bb_width<5:      c_score+=3
+        elif bb_width<10:   a_score+=2
+        else:               b_score+=1
+        if ret_5d>=3:       b_score+=2
+        elif ret_5d>=0:     a_score+=1
+        else:               c_score+=1
+
+        scores = {"B":b_score,"A":a_score,"C":c_score}
+        best   = max(scores, key=scores.get)
+
+        # 타입별 추천 매수가
+        if best=="B":
+            rec_buy    = int(price*0.995)
+            stock_type = "🚀 B타입(돌파형)"
+            buy_reason = f"즉시매수 {rec_buy:,}원"
+        elif best=="A":
+            rec_buy    = int(ma20*0.99)
+            stock_type = "📉 A타입(눌림형)"
+            buy_reason = f"MA20기준 {rec_buy:,}원"
+            if price < ma20:
+                rec_buy    = int(bb_lower*0.99)
+                buy_reason = f"BB하단 {rec_buy:,}원"
         else:
-            # 정상 → 현재가 -1%
-            rec_buy = int(curr * 0.99)
-            heat_msg = "🟢 정상 → 현재가 진입 가능"
+            rec_buy    = int(bb_lower)
+            stock_type = "📦 C타입(횡보형)"
+            buy_reason = f"BB하단 {rec_buy:,}원"
+            if rec_buy < price*0.90:
+                rec_buy    = int(ma20*0.98)
+                buy_reason = f"MA20 {rec_buy:,}원"
 
-        return heat_msg, f"목표가 {target_price:,}원 (업사이드 +{upside}%)", rec_buy, f"BB상단={int(bb_upper):,}"
+        if rec_buy > price:
+            rec_buy = int(price*0.995)
+
+        # 과열도
+        overheat = 0
+        if rsi>=70:          overheat+=1
+        if price>bb_upper:   overheat+=1
+        if price>ma20*1.15:  overheat+=1
+
+        if overheat>=2:   heat_msg="🔴 과열 → 눌림 대기"
+        elif overheat==1: heat_msg="🟠 약과열 → 신중"
+        else:             heat_msg="🟢 정상 → 진입 가능"
+
+        # 업사이드
+        atr    = hist["High"].tail(14).mean()-hist["Low"].tail(14).min()
+        target = int(price+atr*3)
+        upside = round((target-price)/price*100,1)
+
+        return heat_msg, f"목표 {target:,}원(+{upside}%) | {stock_type} | {buy_reason}", rec_buy, stock_type
 
     except:
-        return "-", "-", price, "-"
+        return "-", "-", price, "A타입(눌림형)"
 
 # =====================================================
 # 섹터별 주도주 TOP3 스크리닝
@@ -553,15 +603,7 @@ def get_sector_health(liquidity_score):
             elif stype=="조류": fit_score=40; fit="⚠️ 주의"
             else:               fit_score=20; fit="❌ 비추"
 
-        # 미국 ETF 5일 수익률 가중치 대폭 강화
-        # 기존: ±20점 → 변경: ±40점
-        etf_bonus = min(40, max(-40, rate_5d*4))
-
-        # ETF 마이너스면 조류여도 강등
-        if rate_5d < -2 and stype == "조류":
-            fit_score -= 20  # 조류인데 미국 ETF 약세면 패널티
-
-        total = fit_score + etf_bonus
+        total = fit_score + min(20, max(-20, rate_5d*2))
         results.append({
             "섹터":sector_name,"타입":stype,"us_etf":us_etf,
             "5일수익률":rate_5d,"적합도":fit,"종합점수":round(total,1),
@@ -677,10 +719,29 @@ def calc_signals(avg, current, code, market, qty, high52, low52, current_rate):
         now_vol=hist["Volume"].iloc[-1]
         vol_bad=current_rate<-2 and now_vol>avg_vol*1.5
     except: vol_bad=False
-    if vol_bad:             add_buy="⛔ 거래량 동반 하락 (추가매수 금지!)"
-    elif current<=avg*0.90: add_buy=f"{int(current*0.97):,}원 (2차추가)"
-    elif current<=avg*0.95: add_buy=f"{int(current*0.97):,}원 (1차추가)"
-    else:                   add_buy="-"
+    # 타입별 추가매수가
+    try:
+        ticker2=code+".KS" if market in ("KR","ETF_KR") else code
+        hist2=yf.Ticker(ticker2).history(period="2mo").dropna()
+        ma20=hist2["Close"].rolling(20).mean().iloc[-1]
+        std20=hist2["Close"].rolling(20).std().iloc[-1]
+        bb_lower=ma20-2*std20
+        recent=hist2.tail(20)
+        pullback=((recent["High"]-recent["Low"])/recent["High"]*100).mean()
+    except:
+        ma20=current; bb_lower=current*0.95; pullback=2.0
+
+    if vol_bad:
+        add_buy="⛔ 거래량 동반 하락 (추가매수 금지!)"
+    elif current<=avg*0.90:
+        if pullback<1.5:   add_buy=f"🚀 B타입 즉시추가 {int(current*0.995):,}원"
+        elif pullback<3.0: add_buy=f"📉 A타입 MA20 {int(ma20*0.99):,}원"
+        else:              add_buy=f"📦 C타입 BB하단 {int(bb_lower):,}원"
+    elif current<=avg*0.95:
+        if pullback<1.5:   add_buy=f"🚀 B타입 1차 {int(current*0.995):,}원"
+        else:              add_buy=f"📉 MA20대기 {int(ma20*0.99):,}원"
+    else:
+        add_buy="-"
     ma_sig,_=get_ma_cross(code,market)
     if current<=avg*0.92:        def_sell=f"{int(avg*0.92):,}원 ⚠️ 손절"
     elif current<=avg*0.97:      def_sell=f"{int(avg*0.95):,}원 (방어)"
