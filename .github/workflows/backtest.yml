@@ -1,0 +1,27 @@
+name: 백테스트 실행
+
+on:
+  workflow_dispatch:  # 수동 실행만
+
+jobs:
+  run-backtest:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 코드 가져오기
+        uses: actions/checkout@v4
+
+      - name: Python 설치
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 라이브러리 설치
+        run: pip install requests pandas yfinance
+
+      - name: 백테스트 실행
+        env:
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          RECEIVE_ADDRESS: ${{ secrets.RECEIVE_ADDRESS }}
+        run: python backtest.py
