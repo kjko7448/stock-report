@@ -1012,19 +1012,26 @@ def build_report(token, holdings):
         gc=grade_color.get(p["주도주등급"],"#888")
         ec=entry_color.get(p["진입타이밍"],"#888")
         hc=heat_color.get(p["과열도"],"#888") if p["과열도"] in heat_color else "#f39c12"
-        kr_rows+=f"""<tr>
+        # 매수 판단 (65점 기준)
+        score = p['주도주점수']
+        if score>=80:   buy_action,buy_color,invest_pct = '🔥🔥 적극매수','#e74c3c','100%'
+        elif score>=65: buy_action,buy_color,invest_pct = '🔥 분할매수','#e67e22','50%'
+        else:           buy_action,buy_color,invest_pct = '👀 관망','#888','0%'
+        rec_inv = int(p['추천투자금']*(1.0 if score>=80 else 0.5 if score>=65 else 0))
+
+        kr_rows+=f"""<tr style="{'background:#fff9f0' if score>=80 else 'background:#fffff0' if score>=65 else ''}">
           <td><b>{medal} {p['종목명']}</b><br>
             <span style="background:{tbg};color:{tc};padding:2px 5px;border-radius:4px;font-size:10px">{type_icon.get(p['섹터타입'],'')} {p['섹터']}</span>
           </td>
           <td>{p['현재가']:,}원</td>
           <td style="color:#2980b9;font-weight:bold">{p['추천매수가']:,}원</td>
           <td style="color:{gc};font-weight:bold">{p['주도주등급']}</td>
-          <td style="font-weight:bold">{p['주도주점수']}점</td>
+          <td style="font-weight:bold">{score}점</td>
+          <td style="background:{buy_color};color:white;font-weight:bold;padding:4px;border-radius:4px">{buy_action}<br><small>{invest_pct} = {rec_inv:,}원</small></td>
           <td style="color:{ec};font-size:11px">{p['진입타이밍']}</td>
           <td style="color:{hc};font-size:11px">{p['과열도']}</td>
           <td style="color:#27ae60;font-size:11px">{p['업사이드']}</td>
           <td style="color:{'#e74c3c' if p['RSI']>=70 else '#27ae60' if p['RSI']<=35 else '#333'}">{p['RSI']}</td>
-          <td style="color:#27ae60;font-size:11px">{p['추천투자금']:,}원</td>
           <td style="font-size:10px;color:#666">{p['근거']}</td>
         </tr>"""
 
@@ -1119,7 +1126,7 @@ def build_report(token, holdings):
     </div>
     <div style="overflow-x:auto">
     <table>
-      <tr><th>종목명/섹터</th><th>현재가</th><th>추천매수가</th><th>등급</th><th>점수</th><th>진입타이밍</th><th>과열도</th><th>업사이드</th><th>RSI</th><th>추천투자금</th><th>근거</th></tr>
+      <tr><th>종목명/섹터</th><th>현재가</th><th>추천매수가</th><th>등급</th><th>점수</th><th>매수판단</th><th>진입타이밍</th><th>과열도</th><th>업사이드</th><th>RSI</th><th>근거</th></tr>
       {kr_rows if kr_rows else "<tr><td colspan='11' style='color:#999'>스크리닝 결과 없음</td></tr>"}
     </table>
     </div>
