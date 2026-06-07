@@ -1,6 +1,5 @@
-# portfolio_report.py
-# 포트폴리오 중심 일일 보고서 생성기 (풀버전)
-# Google Sheets + Claude AI + FRED + 탑다운 + 주도주 스코어링
+# portfolio_report.py - 풀버전 (투자 원칙서 기반)
+# Google Sheets + Claude AI + FRED + 탑다운 + 주도주 + 시장신호등 + 매수체크리스트
 # pip install requests pandas yfinance
 
 import requests
@@ -17,9 +16,6 @@ warnings.filterwarnings("ignore")
 
 KST = dt.timezone(dt.timedelta(hours=9))
 
-# =====================================================
-# ✅ 설정값
-# =====================================================
 APP_KEY            = os.environ.get("APP_KEY", "")
 APP_SECRET         = os.environ.get("APP_SECRET", "")
 GMAIL_ADDRESS      = os.environ.get("GMAIL_ADDRESS", "")
@@ -29,11 +25,10 @@ ANTHROPIC_API_KEY  = os.environ.get("ANTHROPIC_API_KEY", "")
 FRED_API_KEY       = os.environ.get("FRED_API_KEY", "")
 TOKEN_FILE         = "token.json"
 TOTAL_ASSETS       = 24_000_000
+CASH_LIMIT         = 6_000_000   # 절대 사수 현금
+MONTHLY_LIMIT_PCT  = 0.20        # 월 매수 한도 (현금의 20%)
 SHEET_ID           = "1-7TeKv9OucJYMvXN55yQ5w0Rg0Fwi8QQH44jmUfzElg"
 
-# =====================================================
-# 미국 주도주 → 한국 수혜주 내러티브 매핑
-# =====================================================
 NARRATIVE_MAP = {
     "NVDA": ["SK하이닉스","이수페타시스","한미반도체","리노공업"],
     "GEV":  ["LS ELECTRIC","일진전기","효성중공업","제룡전기","HD현대일렉트릭"],
@@ -43,9 +38,6 @@ NARRATIVE_MAP = {
     "TSLA": ["에코프로비엠","포스코퓨처엠","삼성SDI"],
 }
 
-# =====================================================
-# 23개 섹터 정의 (한국주식 + 미국 ETF)
-# =====================================================
 SECTORS = {
     "AI/반도체":         {"type":"조류","us_etf":"SMH","stocks":[("005930","삼성전자"),("000660","SK하이닉스"),("042700","한미반도체"),("007660","이수페타시스"),("058470","리노공업")]},
     "전력/전기인프라":   {"type":"조류","us_etf":"GRID","stocks":[("010120","LS ELECTRIC"),("103590","일진전기"),("267270","HD현대일렉트릭"),("094870","효성중공업"),("033100","제룡전기")]},
@@ -73,7 +65,7 @@ SECTORS = {
 }
 
 # =====================================================
-# Google Sheets 연동
+# Google Sheets
 # =====================================================
 def load_holdings_from_sheets():
     url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv"
@@ -91,8 +83,7 @@ def load_holdings_from_sheets():
                 market = str(row["시장"]).strip()
                 if code and name and qty>0 and avg>0:
                     holdings.append((code,name,qty,avg,market))
-            except:
-                continue
+            except: continue
         print(f"✅ {len(holdings)}개 종목 로드 완료")
         return holdings
     except Exception as e:
@@ -132,7 +123,7 @@ def get_default_holdings():
     ]
 
 # =====================================================
-# FRED 유동성 지표
+# FRED 유동성
 # =====================================================
 def get_fred_data(series_id, limit=2):
     try:
@@ -147,8 +138,7 @@ def get_fred_data(series_id, limit=2):
             prev   = float(obs[1]["value"]) if len(obs)>=2 and obs[1]["value"]!="." else latest
             return latest, latest-prev, obs[0]["date"]
         return 0,0,"-"
-    except:
-        return 0,0,"-"
+    except: return 0,0,"-"
 
 def get_liquidity_data():
     print("💧 FRED 유동성 지표 수집 중...")
@@ -169,8 +159,7 @@ def get_liquidity_data():
     return result
 
 def get_liquidity_score(liquidity):
-    score = 50
-    signals = []
+    score = 50; signals = []
     rrp = liquidity.get("역레포(RRP)",{})
     if rrp.get("변화",0)<-10:  score+=10; signals.append("✅ 역레포 감소")
     elif rrp.get("변화",0)>10: score-=10; signals.append("⚠️ 역레포 증가")
@@ -181,16 +170,97 @@ def get_liquidity_score(liquidity):
     if hy.get("값",5)<4:   score+=10; signals.append("✅ 하이일드 정상")
     elif hy.get("값",5)>6: score-=15; signals.append("🔴 하이일드 확대")
     fsi = liquidity.get("금융스트레스지수",{})
-    if fsi.get("값",0)<0:   score+=10; signals.append("✅ 금융 스트레스 낮음")
-    elif fsi.get("값",0)>1: score-=15; signals.append("🔴 금융 스트레스 높음")
+    if fsi.get("값",0)<0:   score+=10; signals.append("✅ 금융스트레스 낮음")
+    elif fsi.get("값",0)>1: score-=15; signals.append("🔴 금융스트레스 높음")
     spread = liquidity.get("장단기 금리차",{})
     if spread.get("값",0)>0.5:    score+=10; signals.append("✅ 금리차 정상")
     elif spread.get("값",0)<-0.5: score-=10; signals.append("⚠️ 금리차 역전")
     score = max(0,min(100,score))
-    if score>=70:   phase,color = "🟢 유동성 확장 (성장주 우위)","#27ae60"
+    if score>=70:   phase,color = "🟢 유동성 확장","#27ae60"
     elif score>=50: phase,color = "🟡 유동성 중립","#f39c12"
-    else:           phase,color = "🔴 유동성 수축 (방어주 우위)","#e74c3c"
+    else:           phase,color = "🔴 유동성 수축","#e74c3c"
     return score,phase,color,signals
+
+# =====================================================
+# ★ 시장 신호등 (핵심 추가!)
+# =====================================================
+def get_market_signal(macro, liq_score):
+    """
+    시장 신호등 판단
+    🟢 불장: 추세추종 적극 매수
+    🟡 횡보: 선별적 매수
+    🔴 하락: 현금 보유
+    """
+    vix = macro.get("VIX",{}).get("가격",20)
+    nq_rate = macro.get("나스닥",{}).get("등락률",0)
+
+    # 코스피 이동평균 확인
+    try:
+        kospi = yf.Ticker("^KS11").history(period="6mo").dropna()
+        curr  = kospi["Close"].iloc[-1]
+        ma20  = kospi["Close"].rolling(20).mean().iloc[-1]
+        ma60  = kospi["Close"].rolling(60).mean().iloc[-1]
+        ma_bull = curr > ma20 > ma60
+        ma_bear = curr < ma20 < ma60
+    except:
+        ma_bull = ma_bear = False
+
+    # 점수 계산
+    bull_score = 0
+    bear_score = 0
+
+    if vix < 20:      bull_score += 1
+    elif vix >= 30:   bear_score += 1
+
+    if liq_score >= 60: bull_score += 1
+    elif liq_score < 40: bear_score += 1
+
+    if ma_bull: bull_score += 1
+    elif ma_bear: bear_score += 1
+
+    if nq_rate > 0: bull_score += 1
+    elif nq_rate < -1: bear_score += 1
+
+    # 신호등 결정
+    if vix >= 40:
+        return "🟢 VIX 극단공포 → 역발상 매수!", "#27ae60", "불장", "역발상", vix
+    elif bear_score >= 3:
+        return "🔴 하락장 → 현금 보유!", "#e74c3c", "하락장", "하락", vix
+    elif bear_score >= 2:
+        return "🟠 조심스러운 하락 → 매수 자제", "#e67e22", "하락장", "주의", vix
+    elif bull_score >= 3:
+        return "🟢 강한 불장 → 추세추종 적극 매수!", "#27ae60", "불장", "불장", vix
+    elif bull_score >= 2:
+        return "🟢 불장 → 주도주 65점↑ 매수", "#27ae60", "불장", "불장", vix
+    else:
+        return "🟡 횡보장 → 선별적 매수만", "#f39c12", "횡보장", "횡보", vix
+
+# =====================================================
+# ★ 매수 체크리스트 (핵심 추가!)
+# =====================================================
+def get_buy_checklist(market_type, liq_score, vix, leader_score, cycle_pct, rsi, cash):
+    """
+    매수 전 9가지 체크리스트 자동 확인
+    """
+    monthly_limit = cash * MONTHLY_LIMIT_PCT
+    safe_cash     = cash - CASH_LIMIT
+
+    checks = [
+        ("시장 신호등 🟢 불장", market_type == "불장" or market_type == "역발상"),
+        ("주도주 점수 65점 이상", leader_score >= 65),
+        ("FRED 유동성 50점 이상", liq_score >= 50),
+        ("사이클 위치 60% 이하", cycle_pct <= 60),
+        ("RSI 70 미만 (과열 아님)", rsi < 70),
+        ("현금 600만원 사수 가능", safe_cash >= 0),
+        ("이번달 한도 남아있음", monthly_limit > 0),
+        ("한 종목 20% 한도 이내", True),
+        ("FOMO 아닌 근거 있는 매수", leader_score >= 65),
+    ]
+
+    passed = sum(1 for _, v in checks)
+    ok     = all(v for _, v in checks)
+
+    return checks, ok, monthly_limit
 
 # =====================================================
 # 기본 함수들
@@ -284,178 +354,122 @@ def get_atr(code, market, period=14):
         return round(atr_pct,2),vol
     except: return 0,"중간"
 
-def get_vix_signal(macro):
-    vix=macro.get("VIX",{}).get("가격",20)
-    if vix>=40:   return "🟢 극단적 공포→역발상 기회!","#27ae60",vix
-    elif vix>=30: return "🔴 단타 완전 금지!","#e74c3c",vix
-    elif vix>=25: return "🟠 보수적 매매","#e67e22",vix
-    elif vix>=20: return "🟡 주의 구간","#f39c12",vix
-    else:         return "🟢 안정→적극 매매","#27ae60",vix
-
 def get_seasonality():
     month=dt.datetime.now(KST).month
-    m={1:"🟢 1월효과(강세)",2:"🟡 2월조정",3:"🟢 3월반등",4:"🟡 4월주의",
-       5:"🔴 5월경고(약세)",6:"🟡 6월보합",7:"🟢 7월반등",8:"🟡 8월변동",
-       9:"🔴 9월경고(약세)",10:"🟢 10월기회",11:"🟢 11월강세",12:"🟢 12월랠리"}
+    m={1:"🟢 1월효과",2:"🟡 2월조정",3:"🟢 3월반등",4:"🟡 4월주의",
+       5:"🔴 5월경고",6:"🟡 6월보합",7:"🟢 7월반등",8:"🟡 8월변동",
+       9:"🔴 9월경고",10:"🟢 10월기회",11:"🟢 11월강세",12:"🟢 12월랠리"}
     return m.get(month,"🟡 보통")
 
 # =====================================================
-# 주도주 스코어링 (핵심!)
+# ★ 주도주 스코어링
 # =====================================================
 def get_leader_score(code, name, price, rate, volume, high52, low52, sector_name):
-    """
-    주도주 점수 계산 (100점 만점)
-    ① 신고가 근접도 + 아웃퍼폼 (20점)
-    ② 섹터 내 상대강도 (10점)
-    ③ 모멘텀 가속도 (10점)
-    ④ 외국인+기관 수급 (15점)
-    ⑤ 거래량 급증 (10점)
-    ⑥ 글로벌 트렌드 부합 (15점)
-    ⑦ 내러티브 확장성 (10점)
-    ⑧ 사이클 위치 (10점)
-    """
-    score = 0
-    details = []
-
+    score=0; details=[]
     try:
-        ticker = code + ".KS"
-        hist   = yf.Ticker(ticker).history(period="3mo").dropna()
-        if len(hist) < 20:
-            return 0, [], "데이터부족", "❓", 0, 0
+        ticker=code+".KS"
+        hist=yf.Ticker(ticker).history(period="3mo").dropna()
+        if len(hist)<20: return 0,[],"-","➖",50,0,0
+        curr=hist["Close"].iloc[-1]
+        kospi=yf.Ticker("^KS11").history(period="3mo").dropna()
 
-        curr    = hist["Close"].iloc[-1]
-        kospi   = yf.Ticker("^KS11").history(period="3mo").dropna()
+        # ① 신고가 근접도
+        if high52>low52: cycle=round((curr-low52)/(high52-low52)*100,1)
+        else: cycle=50
+        if cycle>=80:   score+=20; details.append(f"신고가근처({cycle}%)")
+        elif cycle>=60: score+=15; details.append(f"상승중({cycle}%)")
+        elif cycle>=30: score+=8;  details.append(f"중간({cycle}%)")
+        else:           score+=5;  details.append(f"저점({cycle}%)")
 
-        # ① 신고가 근접도 (0~100%)
-        if high52 > low52:
-            cycle_pct = round((curr - low52) / (high52 - low52) * 100, 1)
-        else:
-            cycle_pct = 50
+        # ② 코스피 대비 아웃퍼폼
+        outperform=0
+        if len(hist)>=20 and len(kospi)>=20:
+            s20=(hist["Close"].iloc[-1]-hist["Close"].iloc[-20])/hist["Close"].iloc[-20]*100
+            k20=(kospi["Close"].iloc[-1]-kospi["Close"].iloc[-20])/kospi["Close"].iloc[-20]*100
+            outperform=round(s20-k20,1)
+            if outperform>=10:  score+=15; details.append(f"강한아웃퍼폼(+{outperform}%)")
+            elif outperform>=5: score+=10; details.append(f"아웃퍼폼(+{outperform}%)")
+            elif outperform>=0: score+=5
+            else:               score-=5;  details.append(f"언더퍼폼({outperform}%)")
 
-        if cycle_pct >= 80:    score+=20; details.append(f"신고가근처({cycle_pct}%)")
-        elif cycle_pct >= 60:  score+=15; details.append(f"상승중({cycle_pct}%)")
-        elif cycle_pct >= 30:  score+=8;  details.append(f"중간({cycle_pct}%)")
-        else:                  score+=5;  details.append(f"저점근처({cycle_pct}%)")
+        # ③ 모멘텀 가속도
+        if len(hist)>=20:
+            r1w=(hist["Close"].iloc[-1]-hist["Close"].iloc[-5])/hist["Close"].iloc[-5]*100
+            r1m=(hist["Close"].iloc[-1]-hist["Close"].iloc[-20])/hist["Close"].iloc[-20]*100
+            if r1w>r1m/4: score+=10; details.append("모멘텀가속")
+            elif r1w>0:   score+=5
 
-        # ② 코스피 대비 아웃퍼폼 (20일)
-        if len(hist) >= 20 and len(kospi) >= 20:
-            stock_20d  = (hist["Close"].iloc[-1] - hist["Close"].iloc[-20]) / hist["Close"].iloc[-20] * 100
-            kospi_20d  = (kospi["Close"].iloc[-1] - kospi["Close"].iloc[-20]) / kospi["Close"].iloc[-20] * 100
-            outperform = stock_20d - kospi_20d
-            if outperform >= 10:   score+=15; details.append(f"강한아웃퍼폼(+{outperform:.1f}%)")
-            elif outperform >= 5:  score+=10; details.append(f"아웃퍼폼(+{outperform:.1f}%)")
-            elif outperform >= 0:  score+=5;  details.append(f"소폭아웃퍼폼")
-            else:                  score-=5;  details.append(f"언더퍼폼({outperform:.1f}%)")
-        else:
-            outperform = 0
+        # ④ 거래량
+        if len(hist)>=20:
+            avg_vol=hist["Volume"].tail(20).mean()
+            vol_r=volume/avg_vol if avg_vol>0 else 1
+            if vol_r>=2:   score+=15; details.append(f"거래량폭발({vol_r:.1f}배)")
+            elif vol_r>=1.5: score+=10; details.append(f"거래량급증")
+            elif vol_r>=1: score+=5
 
-        # ③ 모멘텀 가속도 (1주 vs 1달 비교)
-        if len(hist) >= 20:
-            ret_1w = (hist["Close"].iloc[-1] - hist["Close"].iloc[-5]) / hist["Close"].iloc[-5] * 100
-            ret_1m = (hist["Close"].iloc[-1] - hist["Close"].iloc[-20]) / hist["Close"].iloc[-20] * 100
-            if ret_1w > ret_1m / 4:  score+=10; details.append("모멘텀가속")
-            elif ret_1w > 0:         score+=5
-        else:
-            ret_1w = ret_1m = 0
-
-        # ④ 거래량 급증 + 주가 상승
-        if len(hist) >= 20:
-            avg_vol = hist["Volume"].tail(20).mean()
-            now_vol = hist["Volume"].iloc[-1]
-            vol_ratio = now_vol / avg_vol if avg_vol > 0 else 1
-            if vol_ratio >= 2 and rate > 0:    score+=15; details.append(f"거래량폭발({vol_ratio:.1f}배)")
-            elif vol_ratio >= 1.5 and rate > 0: score+=10; details.append(f"거래량급증({vol_ratio:.1f}배)")
-            elif vol_ratio >= 1:                score+=5
-        else:
-            vol_ratio = 1
-
-        # ⑤ 글로벌 트렌드 부합 (미국 ETF 수익률)
-        us_etf = SECTORS.get(sector_name,{}).get("us_etf","")
-        us_rate = 0
+        # ⑤ 글로벌 트렌드
+        us_etf=SECTORS.get(sector_name,{}).get("us_etf","")
         if us_etf:
             try:
-                us_hist = yf.Ticker(us_etf).history(period="7d").dropna()
-                if len(us_hist) >= 2:
-                    us_rate = (us_hist["Close"].iloc[-1] - us_hist["Close"].iloc[0]) / us_hist["Close"].iloc[0] * 100
-                if us_rate >= 3:   score+=15; details.append(f"글로벌트렌드강({us_rate:+.1f}%)")
-                elif us_rate >= 1: score+=10; details.append(f"글로벌트렌드양호")
-                elif us_rate >= 0: score+=5
-                else:              score-=5;  details.append(f"글로벌약세({us_rate:+.1f}%)")
-            except:
-                pass
+                uh=yf.Ticker(us_etf).history(period="7d").dropna()
+                if len(uh)>=2:
+                    ur=(uh["Close"].iloc[-1]-uh["Close"].iloc[0])/uh["Close"].iloc[0]*100
+                    if ur>=3:   score+=15; details.append(f"글로벌강세(+{ur:.1f}%)")
+                    elif ur>=1: score+=10
+                    elif ur>=0: score+=5
+                    else:       score-=5; details.append(f"글로벌약세")
+            except: pass
 
-        # ⑥ 내러티브 확장성 (미국 주도주 연동)
-        for us_ticker, kr_stocks in NARRATIVE_MAP.items():
+        # ⑥ 내러티브 확장성
+        for us_t, kr_stocks in NARRATIVE_MAP.items():
             if name in kr_stocks:
                 try:
-                    us_hist = yf.Ticker(us_ticker).history(period="7d").dropna()
-                    if len(us_hist) >= 2:
-                        us_ret = (us_hist["Close"].iloc[-1] - us_hist["Close"].iloc[0]) / us_hist["Close"].iloc[0] * 100
-                        if us_ret >= 3:   score+=10; details.append(f"{us_ticker}연동강세")
-                        elif us_ret >= 0: score+=5;  details.append(f"{us_ticker}연동")
-                except:
-                    pass
+                    uh=yf.Ticker(us_t).history(period="7d").dropna()
+                    if len(uh)>=2:
+                        ur=(uh["Close"].iloc[-1]-uh["Close"].iloc[0])/uh["Close"].iloc[0]*100
+                        if ur>=3:   score+=10; details.append(f"{us_t}연동강세")
+                        elif ur>=0: score+=5
+                except: pass
                 break
 
-        # 사이클 위치에 따른 진입 판단
-        if cycle_pct <= 30:    entry = "🟢 초기 (강력매수)"
-        elif cycle_pct <= 60:  entry = "🟡 중기 (분할매수)"
-        elif cycle_pct <= 80:  entry = "🟠 후기 (소량진입)"
-        else:                  entry = "🔴 고점주의 (신중)"
+        # 사이클 위치
+        if cycle<=30:   entry="🟢 초기(강력매수)"
+        elif cycle<=60: entry="🟡 중기(분할매수)"
+        elif cycle<=80: entry="🟠 후기(소량진입)"
+        else:           entry="🔴 고점주의(신중)"
 
-        # 주도주 등급
-        score = max(0, min(100, score))
-        if score >= 80:    grade = "🔥🔥 슈퍼주도주"
-        elif score >= 65:  grade = "🔥 강력주도주"
-        elif score >= 50:  grade = "⭐ 주도주후보"
-        else:              grade = "➖ 일반종목"
+        score=max(0,min(100,score))
+        if score>=80:   grade="🔥🔥 슈퍼주도주"
+        elif score>=65: grade="🔥 강력주도주"
+        elif score>=50: grade="⭐ 주도주후보"
+        else:           grade="➖ 일반종목"
 
-        return score, details, entry, grade, cycle_pct, outperform
+        return score,details,entry,grade,cycle,outperform,volume
 
-    except Exception as e:
-        return 0, [], "분석실패", "➖", 50, 0
+    except: return 0,[],"-","➖",50,0,0
 
 # =====================================================
-# 고점/저점 판단 + 추천 매수가
+# ★ 고점/진입 분석 + 타입별 매수가
 # =====================================================
 def get_entry_analysis(code, price, high52, low52, rsi):
-    """
-    종목 타입 자동 분류 + 타입별 추천 매수가 계산
-
-    A타입 (눌림형) → MA20 기준 매수
-    B타입 (돌파형) → 현재가 -0.5% (즉시 매수)
-    C타입 (횡보형) → 볼린저밴드 하단 매수
-    """
     try:
-        ticker = code + ".KS"
-        hist   = yf.Ticker(ticker).history(period="2mo").dropna()
-        if len(hist) < 20 or price == 0:
-            return "-", "-", price, "A타입(눌림형)"
+        hist=yf.Ticker(code+".KS").history(period="2mo").dropna()
+        if len(hist)<20 or price==0: return "-","-",price,"A타입(눌림형)",0,price
 
-        # 지표 계산
-        ma20     = hist["Close"].rolling(20).mean().iloc[-1]
-        std20    = hist["Close"].rolling(20).std().iloc[-1]
-        bb_upper = ma20 + 2*std20
-        bb_lower = ma20 - 2*std20
-        bb_width = (bb_upper-bb_lower)/ma20*100
+        ma20=hist["Close"].rolling(20).mean().iloc[-1]
+        std20=hist["Close"].rolling(20).std().iloc[-1]
+        bb_upper=ma20+2*std20; bb_lower=ma20-2*std20
+        bb_width=(bb_upper-bb_lower)/ma20*100
 
-        # 최근 20일 평균 눌림 깊이
-        recent   = hist.tail(20)
-        pullback = ((recent["High"]-recent["Low"])/recent["High"]*100).mean()
+        recent=hist.tail(20)
+        pullback=((recent["High"]-recent["Low"])/recent["High"]*100).mean()
+        near_high=(price-high52)/high52*100 if high52>0 else -10
+        avg_vol=hist["Volume"].tail(20).mean()
+        now_vol=hist["Volume"].iloc[-1]
+        vol_surge=now_vol/avg_vol if avg_vol>0 else 1
+        ret_5d=(hist["Close"].iloc[-1]-hist["Close"].iloc[-5])/hist["Close"].iloc[-5]*100 if len(hist)>=5 else 0
 
-        # 신고가 근접도
-        near_high = (price-high52)/high52*100 if high52>0 else -10
-
-        # 거래량 급증
-        avg_vol   = hist["Volume"].tail(20).mean()
-        now_vol   = hist["Volume"].iloc[-1]
-        vol_surge = now_vol/avg_vol if avg_vol>0 else 1
-
-        # 5일 수익률
-        ret_5d = (hist["Close"].iloc[-1]-hist["Close"].iloc[-5])/hist["Close"].iloc[-5]*100 if len(hist)>=5 else 0
-
-        # 타입 점수
-        b_score = a_score = c_score = 0
+        b_score=a_score=c_score=0
         if pullback<1.5:    b_score+=3
         elif pullback<3.0:  a_score+=3
         else:               c_score+=3
@@ -472,124 +486,54 @@ def get_entry_analysis(code, price, high52, low52, rsi):
         elif ret_5d>=0:     a_score+=1
         else:               c_score+=1
 
-        scores = {"B":b_score,"A":a_score,"C":c_score}
-        best   = max(scores, key=scores.get)
+        scores={"B":b_score,"A":a_score,"C":c_score}
+        best=max(scores,key=scores.get)
 
-        # 타입별 추천 매수가
         if best=="B":
-            rec_buy    = int(price*0.995)
-            stock_type = "🚀 B타입(돌파형)"
-            buy_reason = f"즉시매수 {rec_buy:,}원"
+            rec_buy=int(price*0.995); stock_type="🚀 B타입(돌파형)"; buy_reason=f"즉시매수 {rec_buy:,}원"
         elif best=="A":
-            rec_buy    = int(ma20*0.99)
-            stock_type = "📉 A타입(눌림형)"
-            buy_reason = f"MA20기준 {rec_buy:,}원"
-            if price < ma20:
-                rec_buy    = int(bb_lower*0.99)
-                buy_reason = f"BB하단 {rec_buy:,}원"
+            rec_buy=int(ma20*0.99); stock_type="📉 A타입(눌림형)"; buy_reason=f"MA20기준 {rec_buy:,}원"
+            if price<ma20: rec_buy=int(bb_lower*0.99); buy_reason=f"BB하단 {rec_buy:,}원"
         else:
-            rec_buy    = int(bb_lower)
-            stock_type = "📦 C타입(횡보형)"
-            buy_reason = f"BB하단 {rec_buy:,}원"
-            if rec_buy < price*0.90:
-                rec_buy    = int(ma20*0.98)
-                buy_reason = f"MA20 {rec_buy:,}원"
+            rec_buy=int(bb_lower); stock_type="📦 C타입(횡보형)"; buy_reason=f"BB하단 {rec_buy:,}원"
+            if rec_buy<price*0.90: rec_buy=int(ma20*0.98); buy_reason=f"MA20 {rec_buy:,}원"
 
-        if rec_buy > price:
-            rec_buy = int(price*0.995)
+        if rec_buy>price: rec_buy=int(price*0.995)
 
-        # 과열도
-        overheat = 0
-        if rsi>=70:          overheat+=1
-        if price>bb_upper:   overheat+=1
-        if price>ma20*1.15:  overheat+=1
+        # ★ ATR 손절가 계산
+        atr_val=hist["High"].tail(14).mean()-hist["Low"].tail(14).min()
+        atr_stop=int(price-atr_val*2)
 
-        if overheat>=2:   heat_msg="🔴 과열 → 눌림 대기"
-        elif overheat==1: heat_msg="🟠 약과열 → 신중"
-        else:             heat_msg="🟢 정상 → 진입 가능"
+        overheat=0
+        if rsi>=70: overheat+=1
+        if price>bb_upper: overheat+=1
+        if price>ma20*1.15: overheat+=1
+        if overheat>=2: heat="🔴 과열 → 눌림 대기"
+        elif overheat==1: heat="🟠 약과열 → 신중"
+        else: heat="🟢 정상 → 진입 가능"
 
-        # 업사이드
-        atr    = hist["High"].tail(14).mean()-hist["Low"].tail(14).min()
-        target = int(price+atr*3)
-        upside = round((target-price)/price*100,1)
+        atr_target=int(price+atr_val*3)
+        upside=round((atr_target-price)/price*100,1)
 
-        return heat_msg, f"목표 {target:,}원(+{upside}%) | {stock_type} | {buy_reason}", rec_buy, stock_type
+        return heat, f"목표 {atr_target:,}원(+{upside}%) | {stock_type} | {buy_reason}", rec_buy, stock_type, atr_stop, atr_val
 
-    except:
-        return "-", "-", price, "A타입(눌림형)"
+    except: return "-","-",price,"A타입(눌림형)",int(price*0.90),0
 
 # =====================================================
-# 섹터별 주도주 TOP3 스크리닝
-# =====================================================
-def screen_sector_leaders(token, sector_name, sector_info):
-    """섹터별 주도주 TOP3 발굴"""
-    results = []
-    max_loss = TOTAL_ASSETS * 0.02
-
-    for code, name in sector_info["stocks"]:
-        price,rate,volume,high52,low52 = get_kr_price(token, code)
-        if price == 0: continue
-
-        rsi      = get_rsi(code, "KR")
-        ma_sig,_ = get_ma_cross(code, "KR")
-
-        # 주도주 스코어
-        leader_score, leader_details, entry_timing, grade, cycle_pct, outperform = \
-            get_leader_score(code, name, price, rate, volume, high52, low52, sector_name)
-
-        # 고점/진입 분석
-        heat_msg, upside_msg, rec_buy, bb_info = get_entry_analysis(code, price, high52, low52, rsi)
-
-        # 추천 투자금 (2% 룰)
-        try:
-            hist  = yf.Ticker(code+".KS").history(period="2mo").dropna()
-            low20 = int(hist["Low"].tail(20).min()) if len(hist)>=20 else int(price*0.95)
-            loss_pct = (price-low20)/price*100 if price>low20 else 2
-            rec_invest = int(max_loss/(loss_pct/100)) if loss_pct>0 else 0
-        except:
-            rec_invest = 0
-
-        results.append({
-            "섹터":         sector_name,
-            "섹터타입":     sector_info["type"],
-            "종목명":       name,
-            "종목코드":     code,
-            "현재가":       price,
-            "등락률":       rate,
-            "RSI":          rsi,
-            "MA신호":       ma_sig,
-            "주도주점수":   leader_score,
-            "주도주등급":   grade,
-            "사이클위치":   cycle_pct,
-            "진입타이밍":   entry_timing,
-            "과열도":       heat_msg,
-            "업사이드":     upside_msg,
-            "추천매수가":   rec_buy,
-            "추천투자금":   rec_invest,
-            "근거":         ", ".join(leader_details[:3]) if leader_details else "기본분석",
-        })
-
-    results.sort(key=lambda x: x["주도주점수"], reverse=True)
-    return results[:3]
-
-# =====================================================
-# 섹터 건강도 분석
+# 섹터 건강도
 # =====================================================
 def get_sector_health(liquidity_score):
     print("📊 섹터 건강도 분석 중...")
-    results = []
-    for sector_name, sector_info in SECTORS.items():
-        us_etf = sector_info.get("us_etf","")
-        rate_5d = 0
+    results=[]
+    for sector_name,sector_info in SECTORS.items():
+        us_etf=sector_info.get("us_etf",""); rate_5d=0
         try:
             if us_etf:
-                hist = yf.Ticker(us_etf).history(period="7d").dropna()
+                hist=yf.Ticker(us_etf).history(period="7d").dropna()
                 if len(hist)>=2:
-                    rate_5d = round((hist["Close"].iloc[-1]-hist["Close"].iloc[0])/hist["Close"].iloc[0]*100,2)
-        except:
-            pass
-
-        stype = sector_info["type"]
+                    rate_5d=round((hist["Close"].iloc[-1]-hist["Close"].iloc[0])/hist["Close"].iloc[0]*100,2)
+        except: pass
+        stype=sector_info["type"]
         if liquidity_score>=70:
             if stype=="조류":   fit_score=90; fit="⭐ 최우선"
             elif stype=="파도": fit_score=60; fit="✅ 보통"
@@ -603,134 +547,154 @@ def get_sector_health(liquidity_score):
             elif stype=="조류": fit_score=40; fit="⚠️ 주의"
             else:               fit_score=20; fit="❌ 비추"
 
-        total = fit_score + min(20, max(-20, rate_5d*2))
-        results.append({
-            "섹터":sector_name,"타입":stype,"us_etf":us_etf,
-            "5일수익률":rate_5d,"적합도":fit,"종합점수":round(total,1),
-        })
+        # ETF 약세면 조류여도 패널티
+        etf_bonus=min(40,max(-40,rate_5d*4))
+        if rate_5d<-2 and stype=="조류": fit_score-=20
+        total=fit_score+etf_bonus
 
-    return sorted(results, key=lambda x: x["종합점수"], reverse=True)
+        results.append({"섹터":sector_name,"타입":stype,"us_etf":us_etf,
+                        "5일수익률":rate_5d,"적합도":fit,"종합점수":round(total,1)})
+    return sorted(results,key=lambda x:x["종합점수"],reverse=True)
 
-# =====================================================
-# 유동성 → 추천 섹터
-# =====================================================
 def get_recommended_sectors(liquidity_score):
     if liquidity_score>=70:
         priority=[n for n,s in SECTORS.items() if s["type"]=="조류"]
-        extra=[n for n,s in SECTORS.items() if s["type"]=="파도"
-               and n in ["조선/해운","자동차/부품","금융/보험/증권"]]
+        extra=[n for n,s in SECTORS.items() if s["type"]=="파도" and n in ["조선/해운","자동차/부품","금융/보험/증권"]]
         phase="🟢 성장주 우위"
     elif liquidity_score>=50:
-        priority=[n for n,s in SECTORS.items() if s["type"]=="조류"
-                  and n in ["AI/반도체","전력/전기인프라","바이오/헬스케어","방산/우주"]]
+        priority=[n for n,s in SECTORS.items() if s["type"]=="조류" and n in ["AI/반도체","전력/전기인프라","바이오/헬스케어","방산/우주"]]
         extra=[n for n,s in SECTORS.items() if s["type"]=="방어"]
         phase="🟡 중립"
     else:
         priority=[n for n,s in SECTORS.items() if s["type"]=="방어"]
-        extra=[n for n,s in SECTORS.items() if s["type"]=="조류"
-               and n in ["바이오/헬스케어","AI/반도체"]]
+        extra=[n for n,s in SECTORS.items() if s["type"]=="조류" and n in ["바이오/헬스케어","AI/반도체"]]
         phase="🔴 방어주 우위"
     return priority+extra, phase
 
 # =====================================================
-# 탑다운 + 주도주 통합 스크리닝
+# 탑다운 + 주도주 스크리너
 # =====================================================
-def run_topdown_screener(token, liquidity_score, sector_health):
-    """
-    탑다운 방식:
-    유동성 → 섹터 선택 → 섹터별 주도주 TOP3 → 전체 한국 5개 + 미국ETF 2개
-    """
-    print(f"\n🔍 탑다운 + 주도주 스크리너 실행 (유동성: {liquidity_score}점)")
-    rec_sectors, phase_msg = get_recommended_sectors(liquidity_score)
+def run_topdown_screener(token, liquidity_score, sector_health, market_type):
+    print(f"\n🔍 탑다운 + 주도주 스크리너 실행")
+    rec_sectors,phase_msg=get_recommended_sectors(liquidity_score)
+    top_sectors=[s["섹터"] for s in sector_health[:8]]
+    target=[s for s in rec_sectors if s in top_sectors][:6]
 
-    # 섹터 건강도 상위 8개
-    top_sectors = [s["섹터"] for s in sector_health[:8]]
-    target = [s for s in rec_sectors if s in top_sectors][:6]
-    print(f"✅ 스크리닝 섹터: {', '.join(target)}")
-
-    # 한국 주식 주도주 수집
-    kr_picks = []
+    kr_picks=[]
     for sector_name in target:
         if sector_name not in SECTORS: continue
-        print(f"  → {sector_name} 주도주 스크리닝 중...")
-        leaders = screen_sector_leaders(token, sector_name, SECTORS[sector_name])
-        kr_picks.extend(leaders)
+        sector_info=SECTORS[sector_name]
+        print(f"  → {sector_name} 스크리닝 중...")
+        sector_results=[]
 
-    # 전체 점수순 정렬 → 한국 TOP5
-    kr_picks.sort(key=lambda x: x["주도주점수"], reverse=True)
-    kr_top5 = kr_picks[:5]
+        for code,name in sector_info["stocks"][:3]:
+            price,rate,volume,high52,low52=get_kr_price(token,code)
+            if price==0: continue
+            rsi=get_rsi(code,"KR")
+            ma_sig,ma_col=get_ma_cross(code,"KR")
+            leader_score,leader_details,entry_timing,grade,cycle_pct,outperform,vol=\
+                get_leader_score(code,name,price,rate,volume,high52,low52,sector_name)
+            heat_msg,upside_msg,rec_buy,stock_type,atr_stop,atr_val=\
+                get_entry_analysis(code,price,high52,low52,rsi)
 
-    # 미국 ETF TOP2 (섹터 건강도 상위 + 조류 우선)
-    us_etf_picks = []
-    for s in sector_health:
-        if s["us_etf"] and s["us_etf"] != "-" and s["타입"] == "조류":
+            # 시장별 전략 반영
+            if market_type=="하락장" and leader_score<80: continue
+            if market_type=="횡보" and leader_score<70: continue
+
+            # 매수 판단
+            if leader_score>=80:
+                buy_action="🔥🔥 적극매수"; buy_color="#e74c3c"; invest_pct=1.0
+            elif leader_score>=65:
+                buy_action="🔥 분할매수"; buy_color="#e67e22"; invest_pct=0.3
+            else:
+                buy_action="👀 관망"; buy_color="#888"; invest_pct=0.0
+
+            max_loss=TOTAL_ASSETS*0.02
             try:
-                hist = yf.Ticker(s["us_etf"]).history(period="2mo").dropna()
-                if len(hist) < 20: continue
-                curr    = hist["Close"].iloc[-1]
-                high52  = hist["High"].max()
-                low52   = hist["Low"].min()
-                rsi_val = get_rsi(s["us_etf"], "US")
-                cycle   = round((curr-low52)/(high52-low52)*100,1) if high52>low52 else 50
+                hist=yf.Ticker(code+".KS").history(period="2mo").dropna()
+                low20=int(hist["Low"].tail(20).min()) if len(hist)>=20 else int(price*0.95)
+                loss_pct=(price-low20)/price*100 if price>low20 else 2
+                rec_invest=int(max_loss/(loss_pct/100)*invest_pct) if loss_pct>0 else 0
+            except: rec_invest=0
 
-                # 과열 체크
-                ma20 = hist["Close"].rolling(20).mean().iloc[-1]
-                std20= hist["Close"].rolling(20).std().iloc[-1]
-                bb_upper = ma20 + 2*std20
-                overheat = rsi_val>=70 or curr>bb_upper
+            sector_results.append({
+                "섹터":sector_name,"섹터타입":sector_info["type"],
+                "종목명":name,"현재가":price,"추천매수가":rec_buy,
+                "종목타입":stock_type,"등락률":rate,"RSI":rsi,
+                "MA신호":ma_sig,"MA색상":ma_col,
+                "주도주점수":leader_score,"주도주등급":grade,
+                "사이클위치":cycle_pct,"진입타이밍":entry_timing,
+                "과열도":heat_msg,"업사이드":upside_msg,
+                "ATR손절가":atr_stop,"ATR":round(atr_val),
+                "매수판단":buy_action,"매수색상":buy_color,
+                "추천투자금":rec_invest,
+                "근거":", ".join(leader_details[:3]) if leader_details else "기본분석",
+            })
 
-                if overheat:  heat="🟠 약과열"; rec_buy_etf=round(curr*0.98,2)
-                else:         heat="🟢 정상";   rec_buy_etf=round(curr*0.99,2)
+        sector_results.sort(key=lambda x:x["주도주점수"],reverse=True)
+        if sector_results: kr_picks.append(sector_results[0])
 
-                atr     = hist["High"].tail(14).mean() - hist["Low"].tail(14).mean()
-                target_p= round(curr+atr*3,2)
-                upside  = round((target_p-curr)/curr*100,1)
+    kr_picks.sort(key=lambda x:x["주도주점수"],reverse=True)
 
-                us_etf_picks.append({
-                    "섹터":       s["섹터"],
-                    "ETF코드":    s["us_etf"],
-                    "현재가":     f"${curr:.2f}",
-                    "추천매수가": f"${rec_buy_etf:.2f}",
-                    "5일수익률":  s["5일수익률"],
-                    "RSI":        rsi_val,
-                    "사이클":     f"{cycle}%",
-                    "과열도":     heat,
-                    "업사이드":   f"+{upside}%",
-                    "종합점수":   s["종합점수"],
+    # 미국 ETF TOP2
+    us_picks=[]
+    for s in sector_health:
+        if s["us_etf"] and s["us_etf"]!="-" and s["타입"]=="조류":
+            try:
+                hist=yf.Ticker(s["us_etf"]).history(period="2mo").dropna()
+                if len(hist)<20: continue
+                curr=hist["Close"].iloc[-1]
+                high52=hist["High"].max(); low52=hist["Low"].min()
+                rsi_val=get_rsi(s["us_etf"],"US")
+                cycle=round((curr-low52)/(high52-low52)*100,1) if high52>low52 else 50
+                ma20=hist["Close"].rolling(20).mean().iloc[-1]
+                std20=hist["Close"].rolling(20).std().iloc[-1]
+                bb_upper=ma20+2*std20
+                atr_v=hist["High"].tail(14).mean()-hist["Low"].tail(14).min()
+                atr_stop_us=round(curr-atr_v*2,2)
+                overheat=rsi_val>=70 or curr>bb_upper
+                heat="🟠 약과열" if overheat else "🟢 정상"
+                rec_buy_etf=round(curr*0.98 if overheat else curr*0.995,2)
+                target_p=round(curr+atr_v*3,2)
+                upside=round((target_p-curr)/curr*100,1)
+                us_picks.append({
+                    "섹터":s["섹터"],"ETF코드":s["us_etf"],
+                    "현재가":f"${curr:.2f}","추천매수가":f"${rec_buy_etf:.2f}",
+                    "ATR손절가":f"${atr_stop_us:.2f}",
+                    "5일수익률":s["5일수익률"],"RSI":rsi_val,
+                    "사이클":f"{cycle}%","과열도":heat,
+                    "업사이드":f"+{upside}%","종합점수":s["종합점수"],
                 })
-            except:
-                pass
-        if len(us_etf_picks) >= 2:
-            break
+            except: pass
+        if len(us_picks)>=2: break
 
-    return kr_top5, us_etf_picks[:2], rec_sectors, phase_msg
+    return kr_picks[:5],us_picks[:2],rec_sectors,phase_msg
 
 # =====================================================
 # 포트폴리오 매매 신호
 # =====================================================
 def calc_signals(avg, current, code, market, qty, high52, low52, current_rate):
     if current==0 or avg==0:
-        return {k:"-" for k in ["추가매수","방어매도","터틀익절","분할익절","atr익절","변동성"]}
+        return {k:"-" for k in ["추가매수","방어매도","터틀익절","분할익절","atr익절","atr손절","변동성"]}
     profit_rate=(current-avg)/avg*100
     try:
         ticker=code+".KS" if market in ("KR","ETF_KR") else code
-        hist=yf.Ticker(ticker).history(period="1mo").dropna()
+        hist=yf.Ticker(ticker).history(period="2mo").dropna()
         avg_vol=hist["Volume"].tail(20).mean()
         now_vol=hist["Volume"].iloc[-1]
         vol_bad=current_rate<-2 and now_vol>avg_vol*1.5
-    except: vol_bad=False
-    # 타입별 추가매수가
-    try:
-        ticker2=code+".KS" if market in ("KR","ETF_KR") else code
-        hist2=yf.Ticker(ticker2).history(period="2mo").dropna()
-        ma20=hist2["Close"].rolling(20).mean().iloc[-1]
-        std20=hist2["Close"].rolling(20).std().iloc[-1]
+        ma20=hist["Close"].rolling(20).mean().iloc[-1]
+        std20=hist["Close"].rolling(20).std().iloc[-1]
         bb_lower=ma20-2*std20
-        recent=hist2.tail(20)
+        recent=hist.tail(20)
         pullback=((recent["High"]-recent["Low"])/recent["High"]*100).mean()
+        # ATR 손절가
+        atr_v=hist["High"].tail(14).mean()-hist["Low"].tail(14).min()
+        atr_stop=int(current-atr_v*2)
     except:
-        ma20=current; bb_lower=current*0.95; pullback=2.0
+        vol_bad=False; ma20=current; bb_lower=current*0.95; pullback=2.0; atr_stop=int(current*0.90); atr_v=0
 
+    # 타입별 추가매수가
     if vol_bad:
         add_buy="⛔ 거래량 동반 하락 (추가매수 금지!)"
     elif current<=avg*0.90:
@@ -740,19 +704,21 @@ def calc_signals(avg, current, code, market, qty, high52, low52, current_rate):
     elif current<=avg*0.95:
         if pullback<1.5:   add_buy=f"🚀 B타입 1차 {int(current*0.995):,}원"
         else:              add_buy=f"📉 MA20대기 {int(ma20*0.99):,}원"
-    else:
-        add_buy="-"
+    else: add_buy="-"
+
     ma_sig,_=get_ma_cross(code,market)
     if current<=avg*0.92:        def_sell=f"{int(avg*0.92):,}원 ⚠️ 손절"
     elif current<=avg*0.97:      def_sell=f"{int(avg*0.95):,}원 (방어)"
     elif "데드크로스" in ma_sig: def_sell="⚠️ 데드크로스 → 비중 축소"
     else:                        def_sell="-"
+
     try:
         ticker=code+".KS" if market in ("KR","ETF_KR") else code
-        hist=yf.Ticker(ticker).history(period="2mo").dropna()
-        low20=int(hist["Low"].tail(20).min()) if len(hist)>=20 else int(avg*0.93)
+        hist2=yf.Ticker(ticker).history(period="2mo").dropna()
+        low20=int(hist2["Low"].tail(20).min()) if len(hist2)>=20 else int(avg*0.93)
         turtle_sell=f"{low20:,}원 (이탈시 전량)"
     except: turtle_sell="-"
+
     q1,q2=max(1,int(qty*0.3)),max(1,int(qty*0.3))
     q3=max(1,qty-q1-q2)
     p1,p2,p3=int(avg*1.10),int(avg*1.20),int(avg*1.30)
@@ -760,12 +726,15 @@ def calc_signals(avg, current, code, market, qty, high52, low52, current_rate):
     elif profit_rate>=20: split_sell=f"✅2차({q2}주/{p2:,}원)|3차({q3}주/{p3:,}원)"
     elif profit_rate>=10: split_sell=f"✅1차({q1}주/{p1:,}원)|2차({q2}주/{p2:,}원)"
     else:                 split_sell=f"1차({q1}주/{p1:,}원)|2차({q2}주/{p2:,}원)|3차({q3}주/{p3:,}원)"
+
     atr_pct,vol=get_atr(code,market)
     if vol=="높음":   atr_sell=f"{int(avg*1.20):,}/{int(avg*1.40):,}원"
     elif vol=="낮음": atr_sell=f"{int(avg*1.07):,}/{int(avg*1.12):,}원"
     else:             atr_sell=f"{int(avg*1.10):,}/{int(avg*1.20):,}원"
+
     return {"추가매수":add_buy,"방어매도":def_sell,"터틀익절":turtle_sell,
-            "분할익절":split_sell,"atr익절":atr_sell,"변동성":f"{vol}({atr_pct}%)"}
+            "분할익절":split_sell,"atr익절":atr_sell,
+            "atr손절":f"{atr_stop:,}원 (-2ATR)","변동성":f"{vol}({atr_pct}%)"}
 
 def get_recommend_method(name, market):
     etf_kw=["TIGER","RISE","SOL","TIME","KODEX","ACE","QQQ","VOO","SCHD","SPYG","BOTT"]
@@ -776,10 +745,19 @@ def get_recommend_method(name, market):
     elif any(k in name for k in small_kw): return "📈 ATR익절","#e74c3c"
     return "📊 분할익절","#27ae60"
 
+def get_vix_signal(macro):
+    vix=macro.get("VIX",{}).get("가격",20)
+    if vix>=40:   return "🟢 극단공포→역발상!","#27ae60",vix
+    elif vix>=30: return "🔴 단타 완전 금지!","#e74c3c",vix
+    elif vix>=25: return "🟠 보수적 매매","#e67e22",vix
+    elif vix>=20: return "🟡 주의 구간","#f39c12",vix
+    else:         return "🟢 안정→적극 매매","#27ae60",vix
+
 # =====================================================
 # Claude AI 요약
 # =====================================================
-def get_ai_summary(portfolio_rows, macro, vix_val, kr_picks, us_picks, liquidity_score, liquidity_phase):
+def get_ai_summary(portfolio_rows, macro, vix_val, kr_picks, us_picks,
+                   liquidity_score, liquidity_phase, market_signal, market_type):
     print(f"🔑 API 키: {ANTHROPIC_API_KEY[:20] if ANTHROPIC_API_KEY else '없음'}...")
     if not ANTHROPIC_API_KEY: return None
 
@@ -787,28 +765,31 @@ def get_ai_summary(portfolio_rows, macro, vix_val, kr_picks, us_picks, liquidity
     for r in portfolio_rows:
         s=r.get("signals",{})
         line=f"{r['name']}: 등락률 {r['rate']:+.2f}%, 수익률 {r.get('profit_rate',0):+.1f}%"
-        if s.get("방어매도") and s["방어매도"]!="-": line+=f", ⚠️방어매도={s['방어매도']}"
+        if s.get("방어매도") and s["방어매도"]!="-": line+=f", ⚠️{s['방어매도']}"
+        if s.get("atr손절") and s["atr손절"]!="-": line+=f", ATR손절={s['atr손절']}"
         port_summary+=line+"\n"
 
-    kr_summary="".join([
-        f"{p['종목명']}({p['섹터']}): {p['주도주등급']}, {p['진입타이밍']}, {p['과열도']}\n"
-        for p in kr_picks[:3]])
+    kr_summary="".join([f"{p['종목명']}({p['섹터']}): {p['주도주등급']} {p['주도주점수']}점, {p['매수판단']}, ATR손절={p['ATR손절가']:,}원\n" for p in kr_picks[:3]])
+    us_summary="".join([f"{p['ETF코드']}({p['섹터']}): {p['과열도']}, ATR손절={p['ATR손절가']}\n" for p in us_picks])
 
-    us_summary="".join([
-        f"{p['ETF코드']}({p['섹터']}): {p['과열도']}, 업사이드{p['업사이드']}\n"
-        for p in us_picks])
-
-    prompt=f"""당신은 주식 투자 어시스턴트입니다.
+    prompt=f"""당신은 투자 원칙서 기반의 주식 투자 어시스턴트입니다.
 
 === 시장 데이터 ===
+시장신호등: {market_signal} ({market_type})
 VIX: {vix_val} / 나스닥: {macro.get('나스닥',{}).get('등락률',0):+.2f}%
 유동성: {liquidity_score}점 / 국면: {liquidity_phase}
 계절성: {get_seasonality()}
 
+=== 투자 원칙 ===
+매수 기준: 주도주 65점↑ + 불장 + 사이클 60%↓
+손절: ATR -2배 무조건
+익절: 터틀 익절 (추세 끝까지)
+월 한도: 현금의 20%
+
 === 포트폴리오 ===
 {port_summary}
 
-=== 주도주 TOP3 (한국) ===
+=== 주도주 TOP3 ===
 {kr_summary}
 
 === 미국 ETF TOP2 ===
@@ -831,15 +812,14 @@ VIX: {vix_val} / 나스닥: {macro.get('나스닥',{}).get('등락률',0):+.2f}%
 
 🎯 주목할 주도주:
 
-⚠️ 긴급 주의 종목: (없으면 없음)"""
+⚠️ 긴급 주의 종목: (ATR 손절 임박 종목, 없으면 없음)"""
 
     try:
         print("🤖 Claude API 호출 중...")
         res=requests.post(
             "https://api.anthropic.com/v1/messages",
             headers={"x-api-key":ANTHROPIC_API_KEY,"anthropic-version":"2023-06-01","content-type":"application/json"},
-            json={"model":"claude-haiku-4-5","max_tokens":800,
-                  "messages":[{"role":"user","content":prompt}]},
+            json={"model":"claude-haiku-4-5","max_tokens":800,"messages":[{"role":"user","content":prompt}]},
             timeout=30)
         print(f"📡 API 응답: {res.status_code}")
         data=res.json()
@@ -872,15 +852,18 @@ def send_email(subject, html_body):
 # =====================================================
 def build_report(token, holdings):
     today=dt.datetime.now(KST).strftime("%Y년 %m월 %d일 %H:%M")
+    season=get_seasonality()
 
     print("🌍 거시경제 수집 중...")
     macro=get_macro()
     vix_signal,vix_color,vix_val=get_vix_signal(macro)
-    season=get_seasonality()
 
     print("💧 FRED 유동성 지표 수집 중...")
     liquidity=get_liquidity_data()
     liq_score,liq_phase,liq_color,liq_signals=get_liquidity_score(liquidity)
+
+    print("🚦 시장 신호등 판단 중...")
+    market_signal,market_color,market_type,market_strategy,_=get_market_signal(macro,liq_score)
 
     print("📊 섹터 건강도 분석 중...")
     sector_health=get_sector_health(liq_score)
@@ -916,18 +899,31 @@ def build_report(token, holdings):
             "rec_method":rec_method,"rec_color":rec_color,
         })
 
-    print("🔍 탑다운 + 주도주 스크리너 실행 중...")
-    kr_top5, us_top2, rec_sectors, phase_msg = run_topdown_screener(token, liq_score, sector_health)
-
-    print("🤖 Claude AI 요약 생성 중...")
-    ai_summary=get_ai_summary(portfolio_rows,macro,vix_val,kr_top5,us_top2,liq_score,liq_phase)
-
     total_profit=total_current-total_invest
     total_profit_rate=total_profit/total_invest*100 if total_invest>0 else 0
     total_color="#e74c3c" if total_profit<0 else "#27ae60"
     max_loss=int(TOTAL_ASSETS*0.02)
 
-    # AI 요약 HTML
+    # 현금 계산 (대략)
+    estimated_cash=CASH_LIMIT
+    monthly_limit=int(estimated_cash*MONTHLY_LIMIT_PCT)
+
+    print("🔍 탑다운 + 주도주 스크리너 실행 중...")
+    kr_top5,us_top2,rec_sectors,phase_msg=run_topdown_screener(token,liq_score,sector_health,market_type)
+
+    # 매수 체크리스트
+    top_score=kr_top5[0]["주도주점수"] if kr_top5 else 0
+    top_cycle=kr_top5[0]["사이클위치"] if kr_top5 else 50
+    top_rsi=kr_top5[0]["RSI"] if kr_top5 else 50
+    checks,buy_ok,m_limit=get_buy_checklist(market_type,liq_score,vix_val,top_score,top_cycle,top_rsi,estimated_cash)
+
+    print("🤖 Claude AI 요약 생성 중...")
+    ai_summary=get_ai_summary(portfolio_rows,macro,vix_val,kr_top5,us_top2,
+                               liq_score,liq_phase,market_signal,market_type)
+
+    # ── HTML 생성 ──
+
+    # AI 요약
     if ai_summary:
         ai_html=ai_summary\
             .replace("📌 ","<br><b>📌 ").replace("⚡ ","<br><b>⚡ ")\
@@ -941,6 +937,54 @@ def build_report(token, holdings):
   </div>"""
     else:
         ai_section="<div style='background:#f39c12;color:white;padding:14px;text-align:center'>⚠️ AI 요약 생성 실패</div>"
+
+    # 시장 신호등 HTML
+    signal_bg={"불장":"linear-gradient(135deg,#27ae60,#1e8449)",
+                "역발상":"linear-gradient(135deg,#27ae60,#1e8449)",
+                "횡보장":"linear-gradient(135deg,#f39c12,#d68910)",
+                "하락장":"linear-gradient(135deg,#e74c3c,#c0392b)",
+                "주의":"linear-gradient(135deg,#e67e22,#ca6f1e)"}
+    strategy_map={
+        "불장":"추세추종 전략 ON → 주도주 65점↑ 매수 / 터틀 익절 / ATR -2배 손절",
+        "역발상":"VIX 극단공포 → 현금으로 ETF 역발상 매수 기회!",
+        "횡보장":"선별적 매수 → RSI 30↓ + 볼린저 하단만 / 빠른 익절 +10%",
+        "하락장":"현금 보유 → 매수 금지 / 보유 종목 손절 기준 강화",
+        "주의":"보수적 → 신규 매수 자제 / 보유 종목 모니터링"
+    }
+
+    market_section=f"""
+  <div style="background:{signal_bg.get(market_type,'linear-gradient(135deg,#888,#666)')};color:white;padding:20px;text-align:center">
+    <div style="font-size:28px;font-weight:bold;margin-bottom:8px">{market_signal}</div>
+    <div style="font-size:14px;opacity:0.9">{strategy_map.get(market_type,'전략 확인 필요')}</div>
+    <div style="margin-top:10px;display:flex;justify-content:center;gap:20px;font-size:12px;opacity:0.8">
+      <span>VIX {vix_val}</span>
+      <span>유동성 {liq_score}점</span>
+      <span>{season}</span>
+      <span>월 매수한도 {monthly_limit:,}원</span>
+    </div>
+  </div>"""
+
+    # 매수 체크리스트 HTML
+    check_rows=""
+    for check_name, check_result in checks:
+        icon="✅" if check_result else "❌"
+        color="#27ae60" if check_result else "#e74c3c"
+        check_rows+=f"<tr><td style='color:{color};font-size:16px'>{icon}</td><td>{check_name}</td></tr>"
+
+    checklist_section=f"""
+  <div class="section">
+    <div class="section-title">📋 오늘 매수 가능한가? (9가지 체크리스트)</div>
+    <div style="display:flex;gap:16px;align-items:flex-start">
+      <div style="background:{'#d5f5e3' if buy_ok else '#fadbd8'};border:2px solid {'#27ae60' if buy_ok else '#e74c3c'};border-radius:10px;padding:16px;text-align:center;min-width:140px">
+        <div style="font-size:36px">{'✅' if buy_ok else '❌'}</div>
+        <div style="font-size:14px;font-weight:bold;color:{'#27ae60' if buy_ok else '#e74c3c'}">{'매수 가능!' if buy_ok else '오늘은 패스!'}</div>
+        <div style="font-size:11px;color:#666;margin-top:4px">월 한도: {monthly_limit:,}원</div>
+      </div>
+      <table style="flex:1;font-size:12px">
+        {check_rows}
+      </table>
+    </div>
+  </div>"""
 
     # 유동성 HTML
     liq_rows=""
@@ -963,8 +1007,7 @@ def build_report(token, holdings):
         fit_color=fit_colors.get(s["적합도"],"#888")
         score_color="#27ae60" if s["종합점수"]>=70 else "#f39c12" if s["종합점수"]>=50 else "#e74c3c"
         sector_rows+=f"""<tr>
-          <td>{rank}</td>
-          <td><b>{s['섹터']}</b></td>
+          <td>{rank}</td><td><b>{s['섹터']}</b></td>
           <td><span style="background:{type_bg[s['타입']]};color:{type_color[s['타입']]};padding:2px 5px;border-radius:4px;font-size:10px">{type_icon[s['타입']]} {s['타입']}</span></td>
           <td style="color:{rate_color}">{s['5일수익률']:+.2f}%</td>
           <td style="color:{fit_color};font-weight:bold">{s['적합도']}</td>
@@ -973,14 +1016,13 @@ def build_report(token, holdings):
         </tr>"""
 
     # 거시경제 HTML
-    macro_html="".join([
-        f"<div class='mc'><div class='ml'>{n}</div><div class='mv' style='color:{'#e74c3c' if v['등락률']<0 else '#27ae60'}'>{v['등락률']:+.2f}%</div></div>"
-        for n,v in macro.items()])
+    macro_html="".join([f"<div class='mc'><div class='ml'>{n}</div><div class='mv' style='color:{'#e74c3c' if v['등락률']<0 else '#27ae60'}'>{v['등락률']:+.2f}%</div></div>" for n,v in macro.items()])
 
     # 포트폴리오 HTML
     port_rows=""
     for r in portfolio_rows:
         s=r["signals"]
+        atr_stop_color="#e74c3c" if s.get("atr손절","-")!="-" else "#888"
         port_rows+=f"""<tr>
           <td><b>{r['name']}</b><br><small style="color:#999">{r['market']}</small></td>
           <td>{r['price_display']}</td>
@@ -993,16 +1035,13 @@ def build_report(token, holdings):
           <td style="color:#e67e22;font-size:11px">{s['방어매도']}</td>
           <td style="color:#8e44ad;font-size:11px">{s['터틀익절']}</td>
           <td style="color:#27ae60;font-size:11px">{s['분할익절']}</td>
-          <td style="color:#e74c3c;font-size:11px">{s['atr익절']}</td>
+          <td style="color:{atr_stop_color};font-size:11px;font-weight:bold">{s.get('atr손절','-')}</td>
         </tr>"""
 
-    # 한국 주도주 TOP5 HTML
-    grade_color={"🔥🔥 슈퍼주도주":"#e74c3c","🔥 강력주도주":"#e67e22",
-                 "⭐ 주도주후보":"#f39c12","➖ 일반종목":"#888"}
-    entry_color={"🟢 초기 (강력매수)":"#27ae60","🟡 중기 (분할매수)":"#f39c12",
-                 "🟠 후기 (소량진입)":"#e67e22","🔴 고점주의 (신중)":"#e74c3c"}
-    heat_color={"🟢 정상 → 현재가 진입 가능":"#27ae60","🟠 약과열 → -2% 진입":"#f39c12",
-                "🔴 과열 → 눌림 대기":"#e74c3c"}
+    # 주도주 TOP5 HTML
+    grade_color={"🔥🔥 슈퍼주도주":"#e74c3c","🔥 강력주도주":"#e67e22","⭐ 주도주후보":"#f39c12","➖ 일반종목":"#888"}
+    entry_color={"🟢 초기(강력매수)":"#27ae60","🟡 중기(분할매수)":"#f39c12","🟠 후기(소량진입)":"#e67e22","🔴 고점주의(신중)":"#e74c3c"}
+    heat_color={"🟢 정상 → 진입 가능":"#27ae60","🟠 약과열 → 신중":"#f39c12","🔴 과열 → 눌림 대기":"#e74c3c"}
 
     kr_rows=""
     for i,p in enumerate(kr_top5,1):
@@ -1011,23 +1050,21 @@ def build_report(token, holdings):
         tbg=type_bg.get(p["섹터타입"],"#eee")
         gc=grade_color.get(p["주도주등급"],"#888")
         ec=entry_color.get(p["진입타이밍"],"#888")
-        hc=heat_color.get(p["과열도"],"#888") if p["과열도"] in heat_color else "#f39c12"
-        # 매수 판단 (65점 기준)
-        score = p['주도주점수']
-        if score>=80:   buy_action,buy_color,invest_pct = '🔥🔥 적극매수','#e74c3c','100%'
-        elif score>=65: buy_action,buy_color,invest_pct = '🔥 분할매수','#e67e22','50%'
-        else:           buy_action,buy_color,invest_pct = '👀 관망','#888','0%'
-        rec_inv = int(p['추천투자금']*(1.0 if score>=80 else 0.5 if score>=65 else 0))
-
-        kr_rows+=f"""<tr style="{'background:#fff9f0' if score>=80 else 'background:#fffff0' if score>=65 else ''}">
+        hc=heat_color.get(p["과열도"],"#f39c12") if p["과열도"] in heat_color else "#f39c12"
+        score=p["주도주점수"]
+        buy_color=p["매수색상"]
+        row_bg="#fff9f0" if score>=80 else "#fffff0" if score>=65 else ""
+        kr_rows+=f"""<tr style="background:{row_bg}">
           <td><b>{medal} {p['종목명']}</b><br>
-            <span style="background:{tbg};color:{tc};padding:2px 5px;border-radius:4px;font-size:10px">{type_icon.get(p['섹터타입'],'')} {p['섹터']}</span>
+            <span style="background:{tbg};color:{tc};padding:2px 5px;border-radius:4px;font-size:10px">{type_icon.get(p['섹터타입'],'')} {p['섹터']}</span><br>
+            <small style="color:#888">{p['종목타입']}</small>
           </td>
           <td>{p['현재가']:,}원</td>
           <td style="color:#2980b9;font-weight:bold">{p['추천매수가']:,}원</td>
+          <td style="color:#e74c3c;font-weight:bold;font-size:11px">{p['ATR손절가']:,}원<br><small>(-2ATR)</small></td>
           <td style="color:{gc};font-weight:bold">{p['주도주등급']}</td>
           <td style="font-weight:bold">{score}점</td>
-          <td style="background:{buy_color};color:white;font-weight:bold;padding:4px;border-radius:4px">{buy_action}<br><small>{invest_pct} = {rec_inv:,}원</small></td>
+          <td style="background:{buy_color};color:white;font-weight:bold;font-size:11px;padding:4px;border-radius:4px">{p['매수판단']}<br><small>{p['추천투자금']:,}원</small></td>
           <td style="color:{ec};font-size:11px">{p['진입타이밍']}</td>
           <td style="color:{hc};font-size:11px">{p['과열도']}</td>
           <td style="color:#27ae60;font-size:11px">{p['업사이드']}</td>
@@ -1044,6 +1081,7 @@ def build_report(token, holdings):
           <td><b>{medal} {p['ETF코드']}</b><br><small style="color:#888">{p['섹터']}</small></td>
           <td>{p['현재가']}</td>
           <td style="color:#2980b9;font-weight:bold">{p['추천매수가']}</td>
+          <td style="color:#e74c3c;font-weight:bold">{p['ATR손절가']}</td>
           <td style="color:{'#27ae60' if p['5일수익률']>=0 else '#e74c3c'}">{p['5일수익률']:+.2f}%</td>
           <td style="color:{'#e74c3c' if p['RSI']>=70 else '#27ae60' if p['RSI']<=35 else '#333'}">{p['RSI']}</td>
           <td>{p['사이클']}</td>
@@ -1083,10 +1121,12 @@ def build_report(token, holdings):
 <div class="container">
   <div class="header">
     <h1>📊 포트폴리오 일일 보고서</h1>
-    <p style="margin:4px 0 0;opacity:0.8;font-size:12px">{today} | VIX {vix_val} {vix_signal} | {season}</p>
+    <p style="margin:4px 0 0;opacity:0.8;font-size:12px">{today} | {season}</p>
   </div>
 
   {ai_section}
+  {market_section}
+  {checklist_section}
 
   <div class="section">
     <div class="section-title">🌍 시장 현황</div>
@@ -1120,24 +1160,24 @@ def build_report(token, holdings):
   </div>
 
   <div class="section">
-    <div class="section-title">🔥 탑다운 주도주 TOP5 (한국) | {phase_msg} — 스윙 중기 관점</div>
+    <div class="section-title">🔥 탑다운 주도주 TOP5 (한국) | {phase_msg} | 스윙 중기 관점</div>
     <div style="font-size:11px;color:#666;margin-bottom:8px">
-      📌 주도주 판단 기준: 신고가근접 + 아웃퍼폼 + 모멘텀 + 수급 + 글로벌트렌드 + 내러티브 | 스윙 보유 권장
+      📌 매수기준: 65점↑+불장+사이클60%↓ | 익절: 터틀(20캔들저점이탈) | 손절: ATR -2배 무조건
     </div>
     <div style="overflow-x:auto">
     <table>
-      <tr><th>종목명/섹터</th><th>현재가</th><th>추천매수가</th><th>등급</th><th>점수</th><th>매수판단</th><th>진입타이밍</th><th>과열도</th><th>업사이드</th><th>RSI</th><th>근거</th></tr>
-      {kr_rows if kr_rows else "<tr><td colspan='11' style='color:#999'>스크리닝 결과 없음</td></tr>"}
+      <tr><th>종목명/섹터/타입</th><th>현재가</th><th>추천매수가</th><th>ATR손절가</th><th>등급</th><th>점수</th><th>매수판단</th><th>진입타이밍</th><th>과열도</th><th>업사이드</th><th>RSI</th><th>근거</th></tr>
+      {kr_rows if kr_rows else "<tr><td colspan='12' style='color:#999'>스크리닝 결과 없음</td></tr>"}
     </table>
     </div>
   </div>
 
   <div class="section">
-    <div class="section-title">🌎 미국 ETF TOP2 | 섹터 건강도 + 과열도 분석</div>
+    <div class="section-title">🌎 미국 ETF TOP2 | ATR 손절가 포함</div>
     <div style="overflow-x:auto">
     <table>
-      <tr><th>ETF/섹터</th><th>현재가</th><th>추천매수가</th><th>5일수익률</th><th>RSI</th><th>사이클위치</th><th>과열도</th><th>업사이드</th></tr>
-      {us_rows if us_rows else "<tr><td colspan='8' style='color:#999'>데이터 없음</td></tr>"}
+      <tr><th>ETF/섹터</th><th>현재가</th><th>추천매수가</th><th>ATR손절가</th><th>5일수익률</th><th>RSI</th><th>사이클</th><th>과열도</th><th>업사이드</th></tr>
+      {us_rows if us_rows else "<tr><td colspan='9' style='color:#999'>데이터 없음</td></tr>"}
     </table>
     </div>
   </div>
@@ -1149,17 +1189,21 @@ def build_report(token, holdings):
       <div class="summary-card"><div class="label">현재 평가금</div><div class="value">{total_current:,.0f}원</div></div>
       <div class="summary-card"><div class="label">평가 손익</div><div class="value" style="color:{total_color}">{total_profit:+,.0f}원</div></div>
       <div class="summary-card"><div class="label">수익률</div><div class="value" style="color:{total_color}">{total_profit_rate:+.2f}%</div></div>
-      <div class="summary-card"><div class="label">최대손실(2%)</div><div class="value" style="color:#e74c3c">{max_loss:,}원</div></div>
+      <div class="summary-card"><div class="label">최대손실(2%룰)</div><div class="value" style="color:#e74c3c">{max_loss:,}원</div></div>
+      <div class="summary-card"><div class="label">월 매수한도</div><div class="value" style="color:#2980b9">{monthly_limit:,}원</div></div>
     </div>
     <div style="overflow-x:auto">
     <table>
-      <tr><th>종목명</th><th>현재가</th><th>등락률</th><th>평가손익</th><th>RSI</th><th>MA신호</th><th>추천기법</th><th>추가매수</th><th>방어매도</th><th>🐢터틀익절</th><th>📊분할익절</th><th>📈ATR익절</th></tr>
+      <tr><th>종목명</th><th>현재가</th><th>등락률</th><th>평가손익</th><th>RSI</th><th>MA신호</th><th>추천기법</th><th>추가매수</th><th>방어매도</th><th>🐢터틀익절</th><th>📊분할익절</th><th>🛑ATR손절</th></tr>
       {port_rows}
     </table>
     </div>
   </div>
 
-  <div class="footer">⚠️ 본 보고서는 참고용이며 투자 판단의 최종 책임은 본인에게 있습니다. | FRED + Google Sheets + Claude AI + 주도주 스코어링 (23개 섹터)</div>
+  <div class="footer">
+    ⚠️ 본 보고서는 투자 원칙서 기반 참고용이며 투자 판단의 최종 책임은 본인에게 있습니다.<br>
+    FRED + Google Sheets + Claude AI + 탑다운 스크리너 + 시장신호등 + ATR손절 + 매수체크리스트
+  </div>
 </div>
 </body>
 </html>"""
