@@ -338,7 +338,12 @@ def evaluate_health(metrics, current_price, shares_outstanding=None):
             else:
                 score += 0; details.append(f"🔴 PBR {PBR}배 (고평가)")
     else:
-        details.append("❓ PER/PBR 계산 불가 (발행주식수 데이터 필요)")
+        missing = []
+        if not current_price: missing.append("현재가")
+        if not shares_outstanding: missing.append("발행주식수")
+        if not 당기순이익: missing.append("당기순이익")
+        if not 자본총계: missing.append("자본총계")
+        details.append(f"❓ PER/PBR 계산 불가 (누락: {', '.join(missing)})")
 
     # 등급 산정
     if score >= 80:
@@ -369,24 +374,57 @@ def get_shares_outstanding(dart, stock_code, debug_name=None):
     try:
         # 주식의 총수 현황 보고서 조회
         df = dart.report(stock_code, '주식의총수', year)
+
         if debug_name:
             if df is not None and len(df) > 0:
                 print(f"    [디버그] {debug_name} 주식총수 컬럼: {list(df.columns)}")
+                print(f"    [디버그] {debug_name} 주식총수 데이터(최대3행):")
+                print(df.head(3).to_string())
             else:
-                print(f"    [디버그] {debug_name} 주식총수 보고서 비어있음 (year={year})")
-        if df is not None and len(df) > 0:
-            # '발행주식총수' 또는 '유통주식수' 컬럼에서 보통주 기준 찾기
-            for col in ["istc_totqy", "now_to_isu_stock_totqy"]:
-                if col in df.columns:
-                    row = df[df["se"].astype(str).str.contains("합계|보통주", na=False, regex=True)]
-                    if len(row) > 0:
-                        val = str(row.iloc[0][col]).replace(",", "")
-                        if val and val != "-":
-                            return float(val)
+                print(f"    [디버그] {debug_name} 주식총수 보고서 비어있음 (year={year}, df={df})")
+
+        if df is None or len(df) == 0:
+            return None
+
+        # 컬럼명 자동 탐지 (발행주식총수 관련 컬럼 후보 넓게 탐색)
+        qty_col = None
+        for col in df.columns:
+            if any(k in col for k in ["totqy", "qy"]) and "istc" in col:
+                qty_col = col
+                break
+        if qty_col is None:
+            # 후보가 안 잡히면 'qy'(quantity) 포함 컬럼 전체 중 첫번째
+            qty_candidates = [c for c in df.columns if "qy" in c.lower()]
+            if qty_candidates:
+                qty_col = qty_candidates[0]
+
+        se_col = "se" if "se" in df.columns else None
+
+        if debug_name:
+            print(f"    [디버그] {debug_name} 선택된 qty_col={qty_col}, se_col={se_col}")
+
+        if qty_col is None:
+            return None
+
+        target_df = df
+        if se_col:
+            row = df[df[se_col].astype(str).str.contains("합계|보통주", na=False, regex=True)]
+            if len(row) > 0:
+                target_df = row
+
+        val = str(target_df.iloc[0][qty_col]).replace(",", "").strip()
+        if debug_name:
+            print(f"    [디버그] {debug_name} 추출된 발행주식수 원본값: '{val}'")
+
+        if val and val != "-":
+            return float(val)
         return None
+
     except Exception as e:
+        import traceback
         if debug_name:
             print(f"    [디버그] {debug_name} 주식총수 조회 오류: {e}")
+            print(f"    [디버그 traceback]\n{traceback.format_exc()}")
         return None
 
 # =====================================================
