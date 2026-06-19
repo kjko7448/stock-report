@@ -1,0 +1,30 @@
+name: 보유종목 재무건전성 주간진단
+
+on:
+  workflow_dispatch:  # 수동 실행
+  schedule:
+    - cron: '0 23 * * 0'  # 매주 일요일 UTC 23:00 = 한국시간 월요일 08:00
+
+jobs:
+  run-health-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 코드 가져오기
+        uses: actions/checkout@v4
+
+      - name: Python 설치
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 라이브러리 설치
+        run: pip install opendartreader pandas requests
+
+      - name: 재무건전성 진단 실행
+        env:
+          DART_API_KEY: ${{ secrets.DART_API_KEY }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          RECEIVE_ADDRESS: ${{ secrets.RECEIVE_ADDRESS }}
+        run: python company_health_report.py
