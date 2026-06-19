@@ -91,10 +91,42 @@ def extract_metrics(df):
     if len(fs_pref) == 0:
         fs_pref = df
 
-    def find_amount(account_names, df_target):
-        """계정명 후보군 중 매칭되는 첫 값 반환"""
+    def normalize(text):
+        """공백, 로마숫자, 특수문자 제거해서 매칭 정확도 향상"""
+        import re
+        text = str(text)
+        text = re.sub(r"[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]", "", text)
+        text = re.sub(r"[\.\,\(\)\s0-9]", "", text)
+        return text
+
+    def find_amount(account_names, df_target, sj_div=None):
+        """
+        계정명 후보군 중 매칭되는 첫 값 반환
+        sj_div 지정 시 해당 재무제표 구분(BS/IS/CF)에서만 검색 (정확도 향상)
+        """
+        search_df = df_target
+        if sj_div and "sj_div" in df_target.columns:
+            filtered = df_target[df_target["sj_div"] == sj_div]
+            if len(filtered) > 0:
+                search_df = filtered
+
+        # 1차: 원본 텍스트 포함 검색
         for acc_name in account_names:
-            row = df_target[df_target["account_nm"].str.contains(acc_name, na=False, regex=False)]
+            row = search_df[search_df["account_nm"].str.contains(acc_name, na=False, regex=False)]
+            if len(row) > 0:
+                try:
+                    val = row.iloc[0]["thstrm_amount"]
+                    val = str(val).replace(",", "")
+                    return float(val) if val and val != "-" else None
+                except:
+                    continue
+
+        # 2차: 정규화 후 검색 (로마숫자/공백 제거)
+        search_df_norm = search_df.copy()
+        search_df_norm["__norm"] = search_df_norm["account_nm"].apply(normalize)
+        for acc_name in account_names:
+            norm_target = normalize(acc_name)
+            row = search_df_norm[search_df_norm["__norm"].str.contains(norm_target, na=False, regex=False)]
             if len(row) > 0:
                 try:
                     val = row.iloc[0]["thstrm_amount"]
@@ -118,10 +150,24 @@ def extract_metrics(df):
     metrics["이익잉여금"] = find_amount(["이익잉여금"], fs_pref)
     metrics["자본금"]     = find_amount(["자본금"], fs_pref)
 
-    # 현금흐름표 항목
-    metrics["영업활동현금흐름"] = find_amount(["영업활동", "영업활동으로인한현금흐름"], fs_pref)
-    metrics["투자활동현금흐름"] = find_amount(["투자활동", "투자활동으로인한현금흐름"], fs_pref)
-    metrics["재무활동현금흐름"] = find_amount(["재무활동", "재무활동으로인한현금흐름"], fs_pref)
+    # 현금흐름표 항목 (sj_div="CF"로 한정해서 정확도 향상)
+    metrics["영업활동현금흐름"] = find_amount(
+        ["영업활동으로인한현금흐름", "영업활동현금흐름", "영업활동으로부터의현금흐름", "영업활동"],
+        fs_pref, sj_div="CF")
+    metrics["투자활동현금흐름"] = find_amount(
+        ["투자활동으로인한현금흐름", "투자활동현금흐름", "투자활동으로부터의현금흐름", "투자활동"],
+        fs_pref, sj_div="CF")
+    metrics["재무활동현금흐름"] = find_amount(
+        ["재무활동으로인한현금흐름", "재무활동현금흐름", "재무활동으로부터의현금흐름", "재무활동"],
+        fs_pref, sj_div="CF")
+
+    # sj_div 컬럼이 없거나 CF 매칭 실패 시 전체 범위에서 재검색 (안전망)
+    if metrics["영업활동현금흐름"] is None:
+        metrics["영업활동현금흐름"] = find_amount(["영업활동으로인한현금흐름", "영업활동현금흐름", "영업활동"], fs_pref)
+    if metrics["투자활동현금흐름"] is None:
+        metrics["투자활동현금흐름"] = find_amount(["투자활동으로인한현금흐름", "투자활동현금흐름", "투자활동"], fs_pref)
+    if metrics["재무활동현금흐름"] is None:
+        metrics["재무활동현금흐름"] = find_amount(["재무활동으로인한현금흐름", "재무활동현금흐름", "재무활동"], fs_pref)
 
     return metrics
 
@@ -271,23 +317,40 @@ def evaluate_health(metrics, current_price, shares_outstanding=None):
 # 발행주식수 조회 (PER/PBR 계산용)
 # =====================================================
 def get_shares_outstanding(dart, stock_code):
+    """
+    발행주식수 조회 (PER/PBR 계산용)
+    DART의 report() API로 정기보고서 내 '주식의 총수 현황' 조회
+    """
+    year, reprt_code = get_latest_report_params()
+
     try:
-        info = dart.company(stock_code)
-        # OpenDartReader company()는 발행주식수를 직접 안 줄 수 있어
-        # 별도 API 필요한 경우가 많음. 우선 None 반환 처리.
+        # 주식의 총수 현황 보고서 조회
+        df = dart.report(stock_code, '주식의총수', year)
+        if df is not None and len(df) > 0:
+            # '발행주식총수' 또는 '유통주식수' 컬럼에서 보통주 기준 찾기
+            for col in ["istc_totqy", "now_to_isu_stock_totqy"]:
+                if col in df.columns:
+                    row = df[df["se"].astype(str).str.contains("합계|보통주", na=False, regex=True)]
+                    if len(row) > 0:
+                        val = str(row.iloc[0][col]).replace(",", "")
+                        if val and val != "-":
+                            return float(val)
         return None
-    except:
+    except Exception:
         return None
 
 # =====================================================
 # 메인: 보유 종목 전체 건전성 진단
 # =====================================================
-def diagnose_portfolio_health(holdings):
+def diagnose_portfolio_health(holdings, current_prices=None):
     """
     holdings: [(code, name, qty, avg, market), ...]
+    current_prices: {code: 실시간현재가} 딕셔너리 (옵션)
+                     없으면 평단가로 PER/PBR 계산 (참고용 근사치)
     한국 종목(KR, ETF_KR)만 DART 분석 대상 (ETF/해외주는 제외)
     """
     print("🏥 보유 종목 재무 건전성 진단 시작...")
+    current_prices = current_prices or {}
 
     try:
         dart = get_dart_reader()
@@ -305,7 +368,9 @@ def diagnose_portfolio_health(holdings):
         try:
             df, year, reprt_code = get_financial_data(dart, code, name)
             metrics = extract_metrics(df)
-            health = evaluate_health(metrics, current_price=avg)  # 현재가는 추후 실시간가로 교체 가능
+            shares = get_shares_outstanding(dart, code)
+            price_for_valuation = current_prices.get(code) or avg
+            health = evaluate_health(metrics, current_price=price_for_valuation, shares_outstanding=shares)
 
             results.append({
                 "종목코드": code, "종목명": name,
