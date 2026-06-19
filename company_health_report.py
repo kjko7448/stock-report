@@ -6,6 +6,8 @@
 
 import pandas as pd
 import os
+import json
+import requests
 import datetime as dt
 import smtplib
 from email.mime.text import MIMEText
@@ -20,7 +22,56 @@ KST = dt.timezone(dt.timedelta(hours=9))
 GMAIL_ADDRESS      = os.environ.get("GMAIL_ADDRESS", "")
 GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
 RECEIVE_ADDRESS    = os.environ.get("RECEIVE_ADDRESS", "")
+APP_KEY             = os.environ.get("APP_KEY", "")
+APP_SECRET          = os.environ.get("APP_SECRET", "")
 SHEET_ID           = "1-7TeKv9OucJYMvXN55yQ5w0Rg0Fwi8QQH44jmUfzElg"
+TOKEN_FILE          = "token.json"
+
+# =====================================================
+# 한국투자증권 토큰 + 실시간가 조회 (PER/PBR 정확도 향상용)
+# =====================================================
+def get_token():
+    if os.path.exists(TOKEN_FILE):
+        with open(TOKEN_FILE, "r") as f:
+            data = json.load(f)
+        if data.get("issued_at") == dt.datetime.now(KST).strftime("%Y-%m-%d"):
+            return data["access_token"]
+    url = "https://openapi.koreainvestment.com:9443/oauth2/tokenP"
+    res = requests.post(url, headers={"content-type": "application/json"},
+        data=json.dumps({"grant_type": "client_credentials", "appkey": APP_KEY, "appsecret": APP_SECRET}),
+        timeout=10)
+    token_data = res.json()
+    token_data["issued_at"] = dt.datetime.now(KST).strftime("%Y-%m-%d")
+    with open(TOKEN_FILE, "w") as f:
+        json.dump(token_data, f)
+    return token_data["access_token"]
+
+def get_current_prices(holdings):
+    """보유 종목의 실시간 현재가 일괄 조회 (PER/PBR 계산용)"""
+    prices = {}
+    try:
+        token = get_token()
+    except Exception as e:
+        print(f"⚠️ 토큰 발급 실패, 평단가로 대체 계산: {e}")
+        return prices
+
+    url = "https://openapi.koreainvestment.com:9443/uapi/domestic-stock/v1/quotations/inquire-price"
+    headers = {"content-type": "application/json", "authorization": f"Bearer {token}",
+               "appkey": APP_KEY, "appsecret": APP_SECRET, "tr_id": "FHKST01010100"}
+
+    for code, name, qty, avg, market in holdings:
+        if market not in ("KR",):
+            continue
+        try:
+            res = requests.get(url, headers=headers,
+                params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code}, timeout=10)
+            output = res.json().get("output", {})
+            price = int(output.get("stck_prpr", 0))
+            if price > 0:
+                prices[code] = price
+        except Exception:
+            continue
+    return prices
 
 # =====================================================
 # Google Sheets에서 보유종목 로드 (portfolio_report.py와 동일 로직)
@@ -196,7 +247,16 @@ def main():
     print("🏥 보유 종목 재무 건전성 주간 진단 시작")
     print("="*50)
     holdings = load_holdings_from_sheets()
-    results = diagnose_portfolio_health(holdings)
+
+    print("💹 실시간 현재가 조회 중 (PER/PBR 정확도 향상용)...")
+    try:
+        current_prices = get_current_prices(holdings)
+        print(f"✅ {len(current_prices)}개 종목 실시간가 확보")
+    except Exception as e:
+        print(f"⚠️ 실시간가 조회 실패, 평단가로 대체: {e}")
+        current_prices = {}
+
+    results = diagnose_portfolio_health(holdings, current_prices=current_prices)
 
     html = build_health_report(results)
     with open("company_health_report.html", "w", encoding="utf-8") as f:
