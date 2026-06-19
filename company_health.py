@@ -63,10 +63,21 @@ def get_financial_data(dart, stock_code, name):
 
     for y, code in fallback_sequence:
         try:
-            df = dart.finstate(stock_code, y, reprt_code=code)
+            # finstate_all: 현금흐름표(CF)까지 포함한 전체 재무제표
+            # finstate(주요계정)는 BS/IS만 제공해서 현금흐름 항목이 누락됨
+            df = dart.finstate_all(stock_code, y, reprt_code=code)
             if df is not None and len(df) > 0:
                 return df, y, code
         except Exception as e:
+            continue
+
+    # finstate_all 전체 실패 시 finstate(주요계정)로 최종 안전망 (BS/IS만이라도 확보)
+    for y, code in fallback_sequence:
+        try:
+            df = dart.finstate(stock_code, y, reprt_code=code)
+            if df is not None and len(df) > 0:
+                return df, y, code
+        except Exception:
             continue
 
     return None, None, None
@@ -74,7 +85,7 @@ def get_financial_data(dart, stock_code, name):
 # =====================================================
 # 재무 지표 추출
 # =====================================================
-def extract_metrics(df):
+def extract_metrics(df, debug_name=None):
     """
     DART 재무제표 DataFrame에서 핵심 지표 추출
     fs_div: CFS(연결) 우선, 없으면 OFS(별도)
@@ -83,6 +94,14 @@ def extract_metrics(df):
         return None
 
     metrics = {}
+
+    # 디버그: 실제 들어온 컬럼/sj_div 종류 확인 (문제 진단용)
+    if debug_name:
+        print(f"    [디버그] {debug_name} 컬럼: {list(df.columns)}")
+        if "sj_div" in df.columns:
+            print(f"    [디버그] {debug_name} sj_div 종류: {df['sj_div'].unique().tolist()}")
+        else:
+            print(f"    [디버그] {debug_name} sj_div 컬럼 없음")
 
     # 연결재무제표 우선 사용
     fs_pref = df[df["fs_div"] == "CFS"]
@@ -316,7 +335,7 @@ def evaluate_health(metrics, current_price, shares_outstanding=None):
 # =====================================================
 # 발행주식수 조회 (PER/PBR 계산용)
 # =====================================================
-def get_shares_outstanding(dart, stock_code):
+def get_shares_outstanding(dart, stock_code, debug_name=None):
     """
     발행주식수 조회 (PER/PBR 계산용)
     DART의 report() API로 정기보고서 내 '주식의 총수 현황' 조회
@@ -326,6 +345,11 @@ def get_shares_outstanding(dart, stock_code):
     try:
         # 주식의 총수 현황 보고서 조회
         df = dart.report(stock_code, '주식의총수', year)
+        if debug_name:
+            if df is not None and len(df) > 0:
+                print(f"    [디버그] {debug_name} 주식총수 컬럼: {list(df.columns)}")
+            else:
+                print(f"    [디버그] {debug_name} 주식총수 보고서 비어있음 (year={year})")
         if df is not None and len(df) > 0:
             # '발행주식총수' 또는 '유통주식수' 컬럼에서 보통주 기준 찾기
             for col in ["istc_totqy", "now_to_isu_stock_totqy"]:
@@ -336,7 +360,9 @@ def get_shares_outstanding(dart, stock_code):
                         if val and val != "-":
                             return float(val)
         return None
-    except Exception:
+    except Exception as e:
+        if debug_name:
+            print(f"    [디버그] {debug_name} 주식총수 조회 오류: {e}")
         return None
 
 # =====================================================
@@ -367,8 +393,8 @@ def diagnose_portfolio_health(holdings, current_prices=None):
         print(f"  → {name} 재무 분석 중...")
         try:
             df, year, reprt_code = get_financial_data(dart, code, name)
-            metrics = extract_metrics(df)
-            shares = get_shares_outstanding(dart, code)
+            metrics = extract_metrics(df, debug_name=name)
+            shares = get_shares_outstanding(dart, code, debug_name=name)
             price_for_valuation = current_prices.get(code) or avg
             health = evaluate_health(metrics, current_price=price_for_valuation, shares_outstanding=shares)
 
