@@ -103,11 +103,15 @@ def extract_metrics(df, debug_name=None):
         else:
             print(f"    [디버그] {debug_name} sj_div 컬럼 없음")
 
-    # 연결재무제표 우선 사용
-    fs_pref = df[df["fs_div"] == "CFS"]
-    if len(fs_pref) == 0:
-        fs_pref = df[df["fs_div"] == "OFS"]
-    if len(fs_pref) == 0:
+    # 연결재무제표 우선 사용 (fs_div 컬럼이 없는 경우도 안전하게 처리)
+    if "fs_div" in df.columns:
+        fs_pref = df[df["fs_div"] == "CFS"]
+        if len(fs_pref) == 0:
+            fs_pref = df[df["fs_div"] == "OFS"]
+        if len(fs_pref) == 0:
+            fs_pref = df
+    else:
+        # fs_div 컬럼 자체가 없으면(API 버전에 따라 다름) 전체 데이터 그대로 사용
         fs_pref = df
 
     def normalize(text):
@@ -117,6 +121,26 @@ def extract_metrics(df, debug_name=None):
         text = re.sub(r"[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]", "", text)
         text = re.sub(r"[\.\,\(\)\s0-9]", "", text)
         return text
+
+    # 실제 컬럼명 확인 (OpenDartReader 버전에 따라 컬럼명이 다를 수 있어 자동 탐지)
+    name_col = None
+    for cand in ["account_nm", "account_id"]:
+        if cand in df.columns:
+            name_col = cand
+            break
+    amount_col = None
+    for cand in ["thstrm_amount", "frmtrm_amount"]:
+        if cand in df.columns:
+            amount_col = cand
+            break
+
+    if debug_name:
+        print(f"    [디버그] {debug_name} name_col={name_col}, amount_col={amount_col}")
+
+    if name_col is None or amount_col is None:
+        if debug_name:
+            print(f"    [디버그] {debug_name} 필수 컬럼 없음, 추출 중단")
+        return {}
 
     def find_amount(account_names, df_target, sj_div=None):
         """
@@ -131,10 +155,10 @@ def extract_metrics(df, debug_name=None):
 
         # 1차: 원본 텍스트 포함 검색
         for acc_name in account_names:
-            row = search_df[search_df["account_nm"].str.contains(acc_name, na=False, regex=False)]
+            row = search_df[search_df[name_col].astype(str).str.contains(acc_name, na=False, regex=False)]
             if len(row) > 0:
                 try:
-                    val = row.iloc[0]["thstrm_amount"]
+                    val = row.iloc[0][amount_col]
                     val = str(val).replace(",", "")
                     return float(val) if val and val != "-" else None
                 except:
@@ -142,13 +166,13 @@ def extract_metrics(df, debug_name=None):
 
         # 2차: 정규화 후 검색 (로마숫자/공백 제거)
         search_df_norm = search_df.copy()
-        search_df_norm["__norm"] = search_df_norm["account_nm"].apply(normalize)
+        search_df_norm["__norm"] = search_df_norm[name_col].astype(str).apply(normalize)
         for acc_name in account_names:
             norm_target = normalize(acc_name)
             row = search_df_norm[search_df_norm["__norm"].str.contains(norm_target, na=False, regex=False)]
             if len(row) > 0:
                 try:
-                    val = row.iloc[0]["thstrm_amount"]
+                    val = row.iloc[0][amount_col]
                     val = str(val).replace(",", "")
                     return float(val) if val and val != "-" else None
                 except:
@@ -407,7 +431,9 @@ def diagnose_portfolio_health(holdings, current_prices=None):
                 **health,
             })
         except Exception as e:
+            import traceback
             print(f"    ⚠️ {name} 분석 실패: {e}")
+            print(f"    [상세 traceback]\n{traceback.format_exc()}")
             results.append({
                 "종목코드": code, "종목명": name,
                 "점수": None, "등급": "❓ 분석실패", "색상": "#888",
