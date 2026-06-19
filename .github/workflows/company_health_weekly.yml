@@ -24,6 +24,8 @@ jobs:
       - name: 재무건전성 진단 실행
         env:
           DART_API_KEY: ${{ secrets.DART_API_KEY }}
+          APP_KEY: ${{ secrets.APP_KEY }}
+          APP_SECRET: ${{ secrets.APP_SECRET }}
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           RECEIVE_ADDRESS: ${{ secrets.RECEIVE_ADDRESS }}
